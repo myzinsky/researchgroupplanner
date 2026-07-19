@@ -12,5 +12,7 @@ yarn-debug.log*
 yarn-error.log*
 controlling/static/vendor/
 staticfiles/
+branding/*
+!branding/.gitkeep
 sap_data/
 .DS_Store

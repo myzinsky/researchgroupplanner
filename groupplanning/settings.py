@@ -99,6 +99,7 @@ TEMPLATES = [
                 'django.template.context_processors.request',
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
+                'controlling.context_processors.config_settings',
                 'sap_integration.context_processors.sap_feature',
             ],
         },
@@ -157,6 +158,11 @@ USE_TZ = True
 STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 
+# Deployment-specific static files (e.g. a custom BRAND_LOGO) that
+# shouldn't live in the tracked app code. Gitignored; each deployment
+# drops its own files in here.
+STATICFILES_DIRS = [BASE_DIR / 'branding']
+
 STORAGES = {
     'default': {
         'BACKEND': 'django.core.files.storage.FileSystemStorage',
@@ -190,6 +196,25 @@ EMAIL_USE_SSL = env_bool('EMAIL_USE_SSL', False)
 EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
 EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '')
 DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'noreply@example.com')
+
+# Controlling Configuration
+
+# Whether overhead budgets are split between the own chair ("Lehrstuhl")
+# and other institutes. Some deployments only ever have a single
+# institute, so the split (and its UI) can be disabled entirely.
+OVERHEAD_SPLIT_ENABLED = env_bool('OVERHEAD_SPLIT_ENABLED', True)
+
+# Whether the Landesstellen and Annual Pools funding-source features are
+# used. Some deployments don't need them, so their navigation, UI
+# sections, and related warnings can be disabled entirely.
+LANDESSTELLEN_ENABLED = env_bool('LANDESSTELLEN_ENABLED', True)
+ANNUAL_POOLS_ENABLED = env_bool('ANNUAL_POOLS_ENABLED', True)
+
+# Static-file path (relative to a static dir) of the logo shown in the
+# navbar. Deployments can swap in their own branding by dropping a file
+# under static/ and pointing this at it. Set to an empty string to hide
+# the logo entirely.
+BRAND_LOGO = os.getenv('BRAND_LOGO', 'controlling/img/Symbol_White.svg')
 
 # Optional SAP WebGUI integration. Credentials are only read by the sync command.
 SAP_ENABLED = env_bool('SAP_ENABLED', False)

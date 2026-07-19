@@ -1,17 +1,21 @@
 from decimal import Decimal
-from datetime import date
+from datetime import date, timedelta
 from .utils import render
 from dateutil.relativedelta import relativedelta
 
 from projects.models import AnnualPool, Landesstelle, OverheadBudgetItemShare, Project, StaffBudgetItem
 from staffing.models import Employment, EmploymentSalaries, StaffFundingAllocation, StaffMember
 from staffing.utils import get_salaries_by_month
+from django.conf import settings
 from django.utils import timezone
+from django.db import transaction
 from django.db.models import Q
 from django.http import JsonResponse
 from django.core.mail import send_mail
 from django.contrib.auth.decorators import login_required
 from django.contrib.admin.views.decorators import staff_member_required
+from django.shortcuts import get_object_or_404, redirect
+from django.views.decorators.http import require_POST
 from django.db.models import Sum
 
 from projects.utils import calculate_salary_for_allocation
@@ -98,20 +102,21 @@ def warnings(request):
     # 2) Budget checks on total project level.
     projects = Project.objects.all()
     for project in projects:
-        for overhead_item in project.overheadbudgetitem_set.all():
-            distributed_percentage = sum(
-                share.percentage for share in overhead_item.overheadbudgetitemshare_set.all()
-            )
-            if distributed_percentage != Decimal("100.00"):
-                warnings_list.append({
-                    "severity": "warning",
-                    "title": f"Overhead-Verteilung unvollständig: {project.acronym}",
-                    "detail": (
-                        f"Der Overhead-Posten ({overhead_item.amount} EUR) ist aktuell mit "
-                        f"{distributed_percentage}% verteilt. Erwartet sind 100%."
-                    ),
-                    "link": f"/projects/details/{project.acronym}/",
-                })
+        if settings.OVERHEAD_SPLIT_ENABLED:
+            for overhead_item in project.overheadbudgetitem_set.all():
+                distributed_percentage = sum(
+                    share.percentage for share in overhead_item.overheadbudgetitemshare_set.all()
+                )
+                if distributed_percentage != Decimal("100.00"):
+                    warnings_list.append({
+                        "severity": "warning",
+                        "title": f"Overhead-Verteilung unvollständig: {project.acronym}",
+                        "detail": (
+                            f"Der Overhead-Posten ({overhead_item.amount} EUR) ist aktuell mit "
+                            f"{distributed_percentage}% verteilt. Erwartet sind 100%."
+                        ),
+                        "link": f"/projects/details/{project.acronym}/",
+                    })
 
         staff_budget_sum = project.staffbudgetitem_set.aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
         other_budget_sum = project.otherbudgetitem_set.aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
@@ -178,7 +183,7 @@ def warnings(request):
                 "link": f"/projects/details/{project.acronym}/",
             })
 
-        if project.overheadbudgetitem_set.count() == 0:
+        if project.overheadbudgetitem_set.count() == 0 and not project.no_overhead:
             warnings_list.append({
                 "severity": "warning",
                 "title": f"Projekt ohne Overheadposition: {project.acronym}",
@@ -244,14 +249,18 @@ def warnings(request):
             current = salaries[i]
             following = salaries[i + 1]
             if following.start_date <= current.end_date:
+                overlap_start = following.start_date
+                overlap_end = min(current.end_date, following.end_date)
                 warnings_list.append({
                     "severity": "warning",
                     "title": f"Überlappende Gehaltssätze: {employment.staff_member}",
                     "detail": (
-                        f"Gehalt {current.start_date} - {current.end_date} überlappt mit "
-                        f"{following.start_date} - {following.end_date}."
+                        f"Gehalt {current.start_date} - {current.end_date} ({current.salary} €) überlappt mit "
+                        f"{following.start_date} - {following.end_date} ({following.salary} €) "
+                        f"im Zeitraum {overlap_start} - {overlap_end}."
                     ),
                     "link": f"/staffing/details/{employment.staff_member.id}/",
+                    "merge_salary_ids": (current.id, following.id),
                 })
 
     employments = Employment.objects.select_related("staff_member").prefetch_related(
@@ -346,7 +355,7 @@ def warnings(request):
                         ),
                         "link": f"/projects/details/{project.acronym}/",
                     })
-            elif allocation.landesstelle_id:
+            elif allocation.landesstelle_id and settings.LANDESSTELLEN_ENABLED:
                 ls = allocation.landesstelle
                 if allocation.start_date < ls.start_date:
                     warnings_list.append({
@@ -366,7 +375,7 @@ def warnings(request):
                         ),
                         "link": f"/projects/landesstelle/{ls.id}/",
                     })
-            elif allocation.annual_pool_budget_id:
+            elif allocation.annual_pool_budget_id and settings.ANNUAL_POOLS_ENABLED:
                 pool_budget = allocation.annual_pool_budget
                 if allocation.start_date.year != pool_budget.year or alloc_end.year != pool_budget.year:
                     warnings_list.append({
@@ -402,6 +411,60 @@ def warnings(request):
     return render(request, "controlling/warnings.html", {
         "warnings_list": warnings_list,
     })
+
+
+@login_required
+@require_POST
+def merge_salary_overlap(request, current_id, following_id):
+    current = get_object_or_404(EmploymentSalaries, pk=current_id)
+    following = get_object_or_404(EmploymentSalaries, pk=following_id)
+
+    if current.employment_id != following.employment_id:
+        return redirect("warnings")
+
+    if following.start_date > current.end_date:
+        # No longer overlapping (already resolved) - nothing to do.
+        return redirect("warnings")
+
+    employment = current.employment
+    overlap_start = following.start_date
+    overlap_end = min(current.end_date, following.end_date)
+
+    new_salaries = []
+
+    if current.start_date < overlap_start:
+        new_salaries.append({
+            "start_date": current.start_date,
+            "end_date": overlap_start - timedelta(days=1),
+            "salary": current.salary,
+        })
+
+    new_salaries.append({
+        "start_date": overlap_start,
+        "end_date": overlap_end,
+        "salary": current.salary + following.salary,
+    })
+
+    if current.end_date > overlap_end:
+        new_salaries.append({
+            "start_date": overlap_end + timedelta(days=1),
+            "end_date": current.end_date,
+            "salary": current.salary,
+        })
+    elif following.end_date > overlap_end:
+        new_salaries.append({
+            "start_date": overlap_end + timedelta(days=1),
+            "end_date": following.end_date,
+            "salary": following.salary,
+        })
+
+    with transaction.atomic():
+        current.delete()
+        following.delete()
+        for entry in new_salaries:
+            EmploymentSalaries.objects.create(employment=employment, **entry)
+
+    return redirect("warnings")
 
 
 def statistics(request):
@@ -442,69 +505,74 @@ def statistics(request):
     total_third_party_funds = sum((project.budget_total for project in projects), Decimal("0.00")).quantize(Decimal("0.01"))
 
     # Overhead distribution per institute and year.
-    overhead_by_year_and_institute = {}
-    institute_names = set()
-
-    overhead_shares = OverheadBudgetItemShare.objects.select_related(
-        "institute",
-        "overhead_item__project",
-    )
-
-    for share in overhead_shares:
-        project = share.overhead_item.project
-        effective_end = project.end_date
-        if project.extension_planning_date and project.extension_planning_date > project.end_date:
-            effective_end = project.extension_planning_date
-
-        month_count = (
-            (effective_end.year - project.start_date.year) * 12
-            + (effective_end.month - project.start_date.month)
-            + 1
-        )
-        if month_count <= 0:
-            continue
-
-        institute_name = share.institute.short_name
-        institute_names.add(institute_name)
-
-        yearly_share = (share.overhead_item.amount * share.percentage / Decimal("100")) / Decimal(month_count)
-        current = project.start_date.replace(day=1)
-        end_month = effective_end.replace(day=1)
-
-        while current <= end_month:
-            year = str(current.year)
-            overhead_by_year_and_institute.setdefault(year, {})
-            overhead_by_year_and_institute[year][institute_name] = (
-                overhead_by_year_and_institute[year].get(institute_name, Decimal("0.00")) + yearly_share
-            )
-            current += relativedelta(months=1)
-
-    overhead_institutes = sorted(institute_names)
-    overhead_years = sorted(overhead_by_year_and_institute.keys())
+    overhead_institutes = []
     overhead_rows = []
-    overhead_institute_totals = {name: Decimal("0.00") for name in overhead_institutes}
+    overhead_totals_list = []
+    overhead_overall_total = Decimal("0.00")
 
-    for year in overhead_years:
-        values = []
-        row_total = Decimal("0.00")
-        year_data = overhead_by_year_and_institute.get(year, {})
-        for institute_name in overhead_institutes:
-            value = year_data.get(institute_name, Decimal("0.00")).quantize(Decimal("0.01"))
-            values.append(value)
-            row_total += value
-            overhead_institute_totals[institute_name] += value
+    if settings.OVERHEAD_SPLIT_ENABLED:
+        overhead_by_year_and_institute = {}
+        institute_names = set()
 
-        overhead_rows.append({
-            "year": year,
-            "values": values,
-            "total": row_total.quantize(Decimal("0.01")),
-        })
+        overhead_shares = OverheadBudgetItemShare.objects.select_related(
+            "institute",
+            "overhead_item__project",
+        )
 
-    overhead_totals_list = [
-        overhead_institute_totals[name].quantize(Decimal("0.01"))
-        for name in overhead_institutes
-    ]
-    overhead_overall_total = sum(overhead_totals_list, Decimal("0.00")).quantize(Decimal("0.01"))
+        for share in overhead_shares:
+            project = share.overhead_item.project
+            effective_end = project.end_date
+            if project.extension_planning_date and project.extension_planning_date > project.end_date:
+                effective_end = project.extension_planning_date
+
+            month_count = (
+                (effective_end.year - project.start_date.year) * 12
+                + (effective_end.month - project.start_date.month)
+                + 1
+            )
+            if month_count <= 0:
+                continue
+
+            institute_name = share.institute.short_name
+            institute_names.add(institute_name)
+
+            yearly_share = (share.overhead_item.amount * share.percentage / Decimal("100")) / Decimal(month_count)
+            current = project.start_date.replace(day=1)
+            end_month = effective_end.replace(day=1)
+
+            while current <= end_month:
+                year = str(current.year)
+                overhead_by_year_and_institute.setdefault(year, {})
+                overhead_by_year_and_institute[year][institute_name] = (
+                    overhead_by_year_and_institute[year].get(institute_name, Decimal("0.00")) + yearly_share
+                )
+                current += relativedelta(months=1)
+
+        overhead_institutes = sorted(institute_names)
+        overhead_years = sorted(overhead_by_year_and_institute.keys())
+        overhead_institute_totals = {name: Decimal("0.00") for name in overhead_institutes}
+
+        for year in overhead_years:
+            values = []
+            row_total = Decimal("0.00")
+            year_data = overhead_by_year_and_institute.get(year, {})
+            for institute_name in overhead_institutes:
+                value = year_data.get(institute_name, Decimal("0.00")).quantize(Decimal("0.01"))
+                values.append(value)
+                row_total += value
+                overhead_institute_totals[institute_name] += value
+
+            overhead_rows.append({
+                "year": year,
+                "values": values,
+                "total": row_total.quantize(Decimal("0.01")),
+            })
+
+        overhead_totals_list = [
+            overhead_institute_totals[name].quantize(Decimal("0.01"))
+            for name in overhead_institutes
+        ]
+        overhead_overall_total = sum(overhead_totals_list, Decimal("0.00")).quantize(Decimal("0.01"))
 
     return render(request, "controlling/statistics.html", {
         "statistics_years": sorted_years,
@@ -608,9 +676,9 @@ def main(request):
     for key, value in budgets_per_year.items():
         budgets_per_year[key]["total"] = sum(value.values())
 
-    landesstellen = Landesstelle.objects.all().order_by('start_date')
+    landesstellen = Landesstelle.objects.all().order_by('start_date') if settings.LANDESSTELLEN_ENABLED else Landesstelle.objects.none()
 
-    employments = Employment.objects.select_related('staff_member').prefetch_related(
+    employments = Employment.objects.exclude(staff_member__status='alumni').select_related('staff_member').prefetch_related(
         'stafffundingallocation_set__budget_item__project',
         'stafffundingallocation_set__landesstelle__institute',
         'stafffundingallocation_set__annual_pool_budget__annual_pool',

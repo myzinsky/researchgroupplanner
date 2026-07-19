@@ -63,7 +63,9 @@
     <nav class="navbar navbar-expand-lg navbar-dark gp-navbar d-print-none">
         <div class="container-fluid">
             <a class="navbar-brand mx-2" href="/">
-                <img class="navbar-brand-logo" src="{% static 'controlling/img/Symbol_White.svg' %}" alt="Arbeitsgruppenlogo">
+                {% if BRAND_LOGO %}
+                    <img class="navbar-brand-logo" src="{% static BRAND_LOGO %}" alt="Arbeitsgruppenlogo">
+                {% endif %}
                 <span>Group Planning</span>
             </a>
             {% if user.is_authenticated %}
@@ -82,21 +84,25 @@
                             Mitarbeiter
                         </a>
                     </li>
-                    <li class="nav-item dropdown">
-                        <a class="nav-link dropdown-toggle" href="#" id="navbarDropdownLandesstellen" role="button" data-bs-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
-                            Landesstellen
-                        </a>
-                        <div class="dropdown-menu" aria-labelledby="navbarDropdownLandesstellen">
-                            {% for ls in group_landesstellen %}
-                                <a class="dropdown-item" href="{% url 'projects:landesstelle_detail' ls.id %}">{{ ls }}</a>
-                            {% endfor %}
-                        </div>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="{% url 'annual_pools' %}">
-                            Annual Pools
-                        </a>
-                    </li>
+                    {% if LANDESSTELLEN_ENABLED %}
+                        <li class="nav-item dropdown">
+                            <a class="nav-link dropdown-toggle" href="#" id="navbarDropdownLandesstellen" role="button" data-bs-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+                                Landesstellen
+                            </a>
+                            <div class="dropdown-menu" aria-labelledby="navbarDropdownLandesstellen">
+                                {% for ls in group_landesstellen %}
+                                    <a class="dropdown-item" href="{% url 'projects:landesstelle_detail' ls.id %}">{{ ls }}</a>
+                                {% endfor %}
+                            </div>
+                        </li>
+                    {% endif %}
+                    {% if ANNUAL_POOLS_ENABLED %}
+                        <li class="nav-item">
+                            <a class="nav-link" href="{% url 'annual_pools' %}">
+                                Annual Pools
+                            </a>
+                        </li>
+                    {% endif %}
                     {% if sap_enabled and user.is_staff %}
                         <li class="nav-item">
                             <a class="nav-link" href="{% url 'sap_integration:overview' %}">
