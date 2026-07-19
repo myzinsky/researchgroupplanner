@@ -7,6 +7,7 @@ from django.utils.dateparse import parse_datetime
 from controlling.utils import render
 from projects.models import SAPFund
 from sap_integration.cache import SAPCacheError, available_years, fund_values, load_year
+from sap_integration.cleaning import clean_transactions
 
 
 def _ensure_enabled():
@@ -95,6 +96,12 @@ def fund_detail(request, year, fund_id):
     if not _has_year_data(values):
         raise Http404(f"Für Fonds {fund.fund_number} liegen {year} keine SAP-Daten vor.")
     owner, owner_type = _owner(fund)
+    is_clean = request.GET.get("clean") == "1"
+    transactions = (
+        clean_transactions(values["transactions"])
+        if is_clean
+        else values["transactions"]
+    )
     return render(
         request,
         "sap_integration/fund_detail.html",
@@ -105,6 +112,8 @@ def fund_detail(request, year, fund_id):
             "year": year,
             "years": available_years(settings.SAP_DATA_DIR),
             "values": values,
+            "transactions": transactions,
+            "is_clean": is_clean,
             "generated_at": _generated_at(payload),
         },
     )

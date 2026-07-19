@@ -16,10 +16,12 @@ from selenium.common.exceptions import StaleElementReferenceException
 
 from projects.models import Project, SAPFund
 from sap_integration.cache import fund_values, load_year
+from sap_integration.cleaning import clean_transactions
 from sap_integration.config import SAPConfig, SAPConfigurationError
 from sap_integration.backends.wuerzburg import WuerzburgWebGUIBackend
 from sap_integration.parser import parse_downloaded_reports
 from sap_integration.sync import SAPSyncResult, run_sync
+from sap_integration.workbooks import same_nonempty_workbook_content
 
 
 SAP_TEST_SETTINGS = {
@@ -42,11 +44,27 @@ class FakeSAPBackend:
         self.config = config
 
     def download(self, year, download_dir):
-        reports = {}
-        for report_name in ("budget", "actual", "commitments"):
-            report_path = download_dir / f"{report_name}.xlsx"
-            report_path.write_bytes(f"{report_name}-{year}".encode())
-            reports[report_name] = report_path
+        budget_path = download_dir / "budget.xlsx"
+        actual_path = download_dir / "actual.xlsx"
+        commitments_path = download_dir / "commitments.xlsx"
+        _write_workbook(budget_path, ["Fonds", "Betrag"], [["FUND", year]])
+        _write_workbook(actual_path, ["Fonds", "Betrag"], [["FUND", 10]])
+        _write_workbook(commitments_path, ["Fonds", "Betrag"], [["FUND", 20]])
+        return {
+            "budget": budget_path,
+            "actual": actual_path,
+            "commitments": commitments_path,
+        }
+
+
+class DuplicateTransactionSAPBackend(FakeSAPBackend):
+    def download(self, year, download_dir):
+        reports = super().download(year, download_dir)
+        _write_workbook(
+            reports["commitments"],
+            ["Fonds", "Betrag"],
+            [["FUND", 10]],
+        )
         return reports
 
 
@@ -110,6 +128,51 @@ class SAPSyncTests(SimpleTestCase):
             status = json.loads((Path(data_dir) / "last_download.json").read_text())
             self.assertEqual(status["year"], 2026)
             self.assertNotIn("test-password", json.dumps(status))
+
+    def test_identical_nonempty_transaction_exports_are_detected(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            first = Path(data_dir) / "actual.xlsx"
+            second = Path(data_dir) / "commitments.xlsx"
+            headers = ["Fonds", "Betrag"]
+            rows = [["FUND", 10]]
+            _write_workbook(first, headers, rows)
+            _write_workbook(second, headers, rows)
+
+            self.assertTrue(same_nonempty_workbook_content(first, second))
+
+    def test_empty_transaction_exports_may_be_identical(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            first = Path(data_dir) / "actual.xlsx"
+            second = Path(data_dir) / "commitments.xlsx"
+            headers = ["Fonds", "Betrag"]
+            _write_workbook(first, headers, [])
+            _write_workbook(second, headers, [])
+
+            self.assertFalse(same_nonempty_workbook_content(first, second))
+
+    def test_sync_does_not_publish_identical_transaction_exports(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            config = SAPConfig(
+                enabled=True,
+                url=SAP_TEST_SETTINGS["SAP_URL"],
+                user=SAP_TEST_SETTINGS["SAP_USER"],
+                password=SAP_TEST_SETTINGS["SAP_PASSWORD"],
+                finanzstelle=SAP_TEST_SETTINGS["SAP_FINANZSTELLE"],
+                data_dir=Path(data_dir),
+                browser="chrome",
+                browser_binary="",
+                headless=True,
+                timeout=30,
+                action_delay=0,
+                backend=(
+                    "sap_integration.tests.DuplicateTransactionSAPBackend"
+                ),
+            )
+
+            with self.assertRaisesMessage(ValueError, "denselben nicht-leeren Export"):
+                run_sync(config, 2026)
+
+            self.assertFalse((Path(data_dir) / "raw" / "2026").exists())
 
 
 class SyncSAPCommandTests(TestCase):
@@ -212,6 +275,32 @@ class SAPParserTests(SimpleTestCase):
                 parse_downloaded_reports(data_dir, 2026, ["FUND"])
 
 
+class SAPCleaningTests(SimpleTestCase):
+    def test_removes_exact_counter_bookings_and_groups_equal_positions(self):
+        transactions = [
+            _transaction("actual", "", "Falsche Finanzstelle", "-135.30"),
+            _transaction("actual", "Partner", "Korrigierte Buchung", "135.30"),
+            _transaction("commitment", "Person", "Gehalt April", "1903.75"),
+            _transaction("commitment", "Person", "Gehalt April", "531.17"),
+        ]
+
+        cleaned = clean_transactions(transactions)
+
+        self.assertEqual(len(cleaned), 1)
+        self.assertEqual(cleaned[0]["type"], "commitment")
+        self.assertEqual(cleaned[0]["business_partner"], "Person")
+        self.assertEqual(cleaned[0]["position"], "Gehalt April")
+        self.assertEqual(cleaned[0]["amount"], Decimal("2434.92"))
+
+    def test_does_not_cancel_actual_against_commitment(self):
+        transactions = [
+            _transaction("actual", "Partner", "Bezahlt", "-100.00"),
+            _transaction("commitment", "Partner", "Vorgemerkt", "100.00"),
+        ]
+
+        self.assertEqual(len(clean_transactions(transactions)), 2)
+
+
 class SAPViewsTests(TestCase):
     def setUp(self):
         self.data_directory = tempfile.TemporaryDirectory()
@@ -260,7 +349,33 @@ class SAPViewsTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Kontoauszug WEB-FUND")
         self.assertContains(response, "Geschäftspartner")
+        self.assertContains(response, "Bereinigen")
         self.assertContains(response, 'class="table-secondary"', html=False)
+
+    def test_clean_fund_detail_uses_cleaned_transactions(self):
+        _write_processed_cache(
+            self.data_dir,
+            self.fund.fund_number,
+            transactions=[
+                _transaction("actual", "", "Falsche Buchung", "-100.00"),
+                _transaction("actual", "Partner", "Korrektur", "100.00"),
+                _transaction("commitment", "Person", "Gehalt April", "100.00"),
+                _transaction("commitment", "Person", "Gehalt April", "50.00"),
+            ],
+        )
+        with self.settings(SAP_ENABLED=True, SAP_DATA_DIR=self.data_dir):
+            response = self.client.get(
+                reverse("sap_integration:fund_detail", args=[2026, self.fund.id]),
+                {"clean": "1"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Bereinigte Ansicht")
+        self.assertContains(response, "Original anzeigen")
+        self.assertContains(response, "Gehalt April", count=1)
+        self.assertContains(response, "150,00 €")
+        self.assertNotContains(response, "Falsche Buchung")
+        self.assertNotContains(response, "Korrektur")
 
     def test_fund_without_entries_is_not_available_for_year(self):
         with self.settings(SAP_ENABLED=True, SAP_DATA_DIR=self.data_dir):
@@ -287,9 +402,19 @@ def _write_workbook(path, headers, rows):
     workbook.save(path)
 
 
-def _write_processed_cache(data_dir, fund_number):
+def _transaction(transaction_type, business_partner, position, amount):
+    return {
+        "type": transaction_type,
+        "business_partner": business_partner,
+        "position": position,
+        "amount": amount,
+        "booking_date": None,
+    }
+
+
+def _write_processed_cache(data_dir, fund_number, transactions=None):
     processed_dir = data_dir / "processed"
-    processed_dir.mkdir(parents=True)
+    processed_dir.mkdir(parents=True, exist_ok=True)
     payload = {
         "schema_version": 1,
         "year": 2026,
@@ -303,7 +428,7 @@ def _write_processed_cache(data_dir, fund_number):
                 "commitments_total": "200.00",
                 "combined_total": "300.00",
                 "remaining": "700.00",
-                "transactions": [
+                "transactions": transactions or [
                     {
                         "type": "actual",
                         "business_partner": "Partner",
