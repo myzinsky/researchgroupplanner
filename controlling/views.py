@@ -89,12 +89,13 @@ def warnings(request):
             projected_sum += calculate_salary_for_allocation(allocation).salary_sum
 
         if projected_sum > budget_item.amount:
+            difference = (projected_sum - budget_item.amount).quantize(Decimal("0.01"))
             warnings_list.append({
                 "severity": "danger",
                 "title": f"Budgetüberziehung Personalbudget: {budget_item.title}",
                 "detail": (
                     f"Geplante Personalkosten {projected_sum} EUR überschreiten Budget {budget_item.amount} EUR "
-                    f"(Projekt {budget_item.project.acronym})."
+                    f"(Differenz: {difference} EUR; Projekt {budget_item.project.acronym})."
                 ),
                 "link": f"/projects/details/{budget_item.project.acronym}/",
             })
