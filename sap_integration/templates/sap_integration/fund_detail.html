@@ -34,6 +34,9 @@
     {% if is_clean %}
         <div class="alert alert-info py-2" role="status">
             Bereinigte Ansicht: Gegenbuchungen wurden entfernt und gleiche Positionen zusammengefasst.
+            {% if fund.treat_negative_actuals_as_funding %}
+                Verbleibende negative Ist-Buchungen werden als Mittelzuflüsse nicht in die Ausgaben eingerechnet.
+            {% endif %}
         </div>
     {% endif %}
 
@@ -50,6 +53,11 @@
             <div class="card h-100"><div class="card-body">
                 <div class="text-muted small">Bezahlt</div>
                 <div class="fs-5 fw-semibold">{{ values.actual_total|floatformat:"2g" }} €</div>
+                {% if is_clean and values.funding_total %}
+                    <div class="small text-success">
+                        {{ values.funding_total|floatformat:"2g" }} € Mittelzuflüsse nicht eingerechnet
+                    </div>
+                {% endif %}
             </div></div>
         </div>
         <div class="col-sm-6 col-xl">
@@ -85,10 +93,15 @@
                 </tr>
             </thead>
             <tbody>
-                {% for transaction in transactions %}
-                    <tr{% if transaction.type == "commitment" %} class="table-secondary"{% endif %}>
+                {% for transaction in values.transactions %}
+                    <tr{% if transaction.is_funding %} class="table-success"{% elif transaction.type == "commitment" %} class="table-secondary"{% endif %}>
                         <td>{{ transaction.business_partner|default:"" }}</td>
-                        <td>{{ transaction.position }}</td>
+                        <td>
+                            {{ transaction.position }}
+                            {% if transaction.is_funding %}
+                                <span class="badge text-bg-success ms-1">Mittelzufluss</span>
+                            {% endif %}
+                        </td>
                         <td class="text-end">
                             {% if transaction.type == "actual" %}{{ transaction.amount|floatformat:"2g" }} €{% endif %}
                         </td>
@@ -101,6 +114,13 @@
                 {% endfor %}
             </tbody>
             <tfoot class="fw-bold">
+                {% if is_clean and values.funding_total %}
+                    <tr class="table-success">
+                        <td colspan="2">Mittelzuflüsse (nicht eingerechnet)</td>
+                        <td class="text-end">{{ values.funding_total|floatformat:"2g" }} €</td>
+                        <td></td>
+                    </tr>
+                {% endif %}
                 <tr>
                     <td colspan="2">Summe</td>
                     <td class="text-end">{{ values.actual_total|floatformat:"2g" }} €</td>

@@ -264,6 +264,15 @@ account statements with separate columns for paid transactions and grey-highligh
 commitments. Funds without a row in the SAP budget export are marked as having no
 SAP budget; no remaining amount is calculated for them yet.
 
+Account statements also offer a cleaned view. It removes exact counter-bookings
+and groups transactions with the same type, business partner, and position. For
+funds using payment requests, enable **Treat negative actual postings as funding**
+in the SAP fund configuration. After counter-bookings have been removed, remaining
+negative actual postings are then shown in green as funding receipts and excluded
+from paid, actual-plus-commitments, and remaining-budget calculations. The fund
+overview uses the same adjusted values and marks them accordingly, while the
+original account statement always preserves the unmodified SAP figures.
+
 Setting `SAP_ENABLED=1` also installs a daily synchronization job. It runs at
 05:00 by default and can be changed through `SAP_SYNC_CRON`. The job invokes
 `sync_sap` without `--year`, so every run automatically uses the current fiscal

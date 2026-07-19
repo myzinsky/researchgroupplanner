@@ -30,6 +30,51 @@ def clean_transactions(transactions):
     ]
 
 
+def clean_fund_values(values, treat_negative_actuals_as_funding=False):
+    """Build display values without changing the cached SAP source data."""
+    transactions = clean_transactions(values["transactions"])
+    actual_total = Decimal("0")
+    commitments_total = Decimal("0")
+    funding_total = Decimal("0")
+    displayed_transactions = []
+
+    for transaction in transactions:
+        displayed_transaction = dict(transaction)
+        amount = Decimal(transaction["amount"])
+        is_funding = (
+            treat_negative_actuals_as_funding
+            and transaction["type"] == "actual"
+            and amount < 0
+        )
+        displayed_transaction["is_funding"] = is_funding
+        displayed_transactions.append(displayed_transaction)
+
+        if is_funding:
+            funding_total += -amount
+        elif transaction["type"] == "actual":
+            actual_total += amount
+        else:
+            commitments_total += amount
+
+    combined_total = actual_total + commitments_total
+    result = dict(values)
+    result.update(
+        {
+            "transactions": displayed_transactions,
+            "actual_total": actual_total,
+            "commitments_total": commitments_total,
+            "combined_total": combined_total,
+            "remaining": (
+                values["budget"] - combined_total
+                if values["has_budget"]
+                else None
+            ),
+            "funding_total": funding_total,
+        }
+    )
+    return result
+
+
 def _without_counter_bookings(transactions):
     unmatched = defaultdict(list)
     removed = set()

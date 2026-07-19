@@ -46,12 +46,22 @@
                             <td>
                                 <a href="{% url 'sap_integration:fund_detail' selected_year row.fund.id %}">{{ row.fund.fund_number }}</a>
                                 {% if row.fund.label %}<div class="small text-muted">{{ row.fund.label }}</div>{% endif %}
+                                {% if row.is_adjusted %}
+                                    <div><span class="badge text-bg-success">Mittelzuflüsse bereinigt</span></div>
+                                {% endif %}
                             </td>
                             {% if row.values %}
                                 <td class="text-end">
                                     {% if row.values.has_budget %}{{ row.values.budget|floatformat:"2g" }} €{% else %}<span class="text-muted">kein SAP-Budget</span>{% endif %}
                                 </td>
-                                <td class="text-end">{{ row.values.actual_total|floatformat:"2g" }} €</td>
+                                <td class="text-end">
+                                    {{ row.values.actual_total|floatformat:"2g" }} €
+                                    {% if row.values.funding_total %}
+                                        <div class="small text-success">
+                                            {{ row.values.funding_total|floatformat:"2g" }} € Mittelzuflüsse nicht eingerechnet
+                                        </div>
+                                    {% endif %}
+                                </td>
                                 <td class="text-end table-secondary">{{ row.values.commitments_total|floatformat:"2g" }} €</td>
                                 <td class="text-end fw-semibold">{{ row.values.combined_total|floatformat:"2g" }} €</td>
                                 <td class="text-end">
@@ -67,7 +77,8 @@
                 </tbody>
             </table>
         </div>
-        <p class="small text-muted">Grau hinterlegte Beträge sind Obligo und damit noch nicht zahlungswirksam.</p>
+        <p class="small text-muted mb-1">Grau hinterlegte Beträge sind Obligo und damit noch nicht zahlungswirksam.</p>
+        <p class="small text-success">Grün gekennzeichnete Mittelzuflüsse werden nicht als Ausgaben verrechnet.</p>
     {% else %}
         <div class="alert alert-secondary">
             Führe zuerst <code>python manage.py parse_sap --year {% now "Y" %}</code> aus.

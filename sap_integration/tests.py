@@ -16,7 +16,7 @@ from selenium.common.exceptions import StaleElementReferenceException
 
 from projects.models import Project, SAPFund
 from sap_integration.cache import fund_values, load_year
-from sap_integration.cleaning import clean_transactions
+from sap_integration.cleaning import clean_fund_values, clean_transactions
 from sap_integration.config import SAPConfig, SAPConfigurationError
 from sap_integration.backends.wuerzburg import WuerzburgWebGUIBackend
 from sap_integration.parser import parse_downloaded_reports
@@ -300,6 +300,34 @@ class SAPCleaningTests(SimpleTestCase):
 
         self.assertEqual(len(clean_transactions(transactions)), 2)
 
+    def test_negative_actuals_become_funding_after_counter_bookings(self):
+        values = {
+            "has_budget": True,
+            "budget": Decimal("1000.00"),
+            "transactions": [
+                _transaction("actual", "", "Fehlbuchung", "-100.00"),
+                _transaction("actual", "Partner", "Korrektur", "100.00"),
+                _transaction("actual", "Förderer", "Zahlungsanforderung", "-500.00"),
+                _transaction("actual", "Partner", "Ausgabe", "200.00"),
+                _transaction("commitment", "Partner", "Vorgemerkt", "50.00"),
+            ],
+        }
+
+        cleaned = clean_fund_values(
+            values,
+            treat_negative_actuals_as_funding=True,
+        )
+
+        self.assertEqual(cleaned["actual_total"], Decimal("200.00"))
+        self.assertEqual(cleaned["funding_total"], Decimal("500.00"))
+        self.assertEqual(cleaned["commitments_total"], Decimal("50.00"))
+        self.assertEqual(cleaned["combined_total"], Decimal("250.00"))
+        self.assertEqual(cleaned["remaining"], Decimal("750.00"))
+        self.assertEqual(len(cleaned["transactions"]), 3)
+        funding = [row for row in cleaned["transactions"] if row["is_funding"]]
+        self.assertEqual(len(funding), 1)
+        self.assertEqual(funding[0]["amount"], Decimal("-500.00"))
+
 
 class SAPViewsTests(TestCase):
     def setUp(self):
@@ -377,6 +405,58 @@ class SAPViewsTests(TestCase):
         self.assertNotContains(response, "Falsche Buchung")
         self.assertNotContains(response, "Korrektur")
 
+    def test_configured_fund_displays_and_excludes_funding_in_clean_view(self):
+        self.fund.treat_negative_actuals_as_funding = True
+        self.fund.save(update_fields=["treat_negative_actuals_as_funding"])
+        transactions = [
+            _transaction("actual", "", "Fehlbuchung", "-100.00"),
+            _transaction("actual", "Partner", "Korrektur", "100.00"),
+            _transaction("actual", "Förderer", "Zahlungsanforderung", "-500.00"),
+            _transaction("actual", "Partner", "Ausgabe", "200.00"),
+            _transaction("commitment", "Partner", "Vorgemerkt", "50.00"),
+        ]
+        _write_processed_cache(
+            self.data_dir,
+            self.fund.fund_number,
+            transactions=transactions,
+        )
+
+        with self.settings(SAP_ENABLED=True, SAP_DATA_DIR=self.data_dir):
+            response = self.client.get(
+                reverse("sap_integration:fund_detail", args=[2026, self.fund.id]),
+                {"clean": "1"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["values"]["actual_total"], Decimal("200.00"))
+        self.assertEqual(response.context["values"]["funding_total"], Decimal("500.00"))
+        self.assertEqual(response.context["values"]["remaining"], Decimal("750.00"))
+        self.assertContains(response, 'class="table-success"', html=False)
+        self.assertContains(response, "Mittelzufluss")
+        self.assertContains(response, "500,00 € Mittelzuflüsse nicht eingerechnet")
+
+    def test_overview_uses_adjusted_values_for_configured_fund(self):
+        self.fund.treat_negative_actuals_as_funding = True
+        self.fund.save(update_fields=["treat_negative_actuals_as_funding"])
+        _write_processed_cache(
+            self.data_dir,
+            self.fund.fund_number,
+            transactions=[
+                _transaction("actual", "Förderer", "Zahlungsanforderung", "-500.00"),
+                _transaction("actual", "Partner", "Ausgabe", "200.00"),
+                _transaction("commitment", "Partner", "Vorgemerkt", "50.00"),
+            ],
+        )
+
+        with self.settings(SAP_ENABLED=True, SAP_DATA_DIR=self.data_dir):
+            response = self.client.get(reverse("sap_integration:overview"))
+
+        values = response.context["rows"][0]["values"]
+        self.assertEqual(values["actual_total"], Decimal("200.00"))
+        self.assertEqual(values["funding_total"], Decimal("500.00"))
+        self.assertEqual(values["remaining"], Decimal("750.00"))
+        self.assertContains(response, "Mittelzuflüsse bereinigt")
+
     def test_fund_without_entries_is_not_available_for_year(self):
         with self.settings(SAP_ENABLED=True, SAP_DATA_DIR=self.data_dir):
             response = self.client.get(
@@ -415,6 +495,35 @@ def _transaction(transaction_type, business_partner, position, amount):
 def _write_processed_cache(data_dir, fund_number, transactions=None):
     processed_dir = data_dir / "processed"
     processed_dir.mkdir(parents=True, exist_ok=True)
+    transactions = transactions or [
+        {
+            "type": "actual",
+            "business_partner": "Partner",
+            "position": "Bezahlt",
+            "amount": "100.00",
+            "booking_date": "2026-01-01",
+        },
+        {
+            "type": "commitment",
+            "business_partner": "Partner",
+            "position": "Vorgemerkt",
+            "amount": "200.00",
+            "booking_date": None,
+        },
+    ]
+    actual_total = sum(
+        (Decimal(row["amount"]) for row in transactions if row["type"] == "actual"),
+        Decimal("0"),
+    )
+    commitments_total = sum(
+        (
+            Decimal(row["amount"])
+            for row in transactions
+            if row["type"] == "commitment"
+        ),
+        Decimal("0"),
+    )
+    combined_total = actual_total + commitments_total
     payload = {
         "schema_version": 1,
         "year": 2026,
@@ -424,26 +533,11 @@ def _write_processed_cache(data_dir, fund_number, transactions=None):
                 "fund_number": fund_number,
                 "has_budget": True,
                 "budget": "1000.00",
-                "actual_total": "100.00",
-                "commitments_total": "200.00",
-                "combined_total": "300.00",
-                "remaining": "700.00",
-                "transactions": transactions or [
-                    {
-                        "type": "actual",
-                        "business_partner": "Partner",
-                        "position": "Bezahlt",
-                        "amount": "100.00",
-                        "booking_date": "2026-01-01",
-                    },
-                    {
-                        "type": "commitment",
-                        "business_partner": "Partner",
-                        "position": "Vorgemerkt",
-                        "amount": "200.00",
-                        "booking_date": None,
-                    },
-                ],
+                "actual_total": str(actual_total),
+                "commitments_total": str(commitments_total),
+                "combined_total": str(combined_total),
+                "remaining": str(Decimal("1000.00") - combined_total),
+                "transactions": transactions,
             }
         },
     }
