@@ -273,6 +273,17 @@ from paid, actual-plus-commitments, and remaining-budget calculations. The fund
 overview uses the same adjusted values and marks them accordingly, while the
 original account statement always preserves the unmodified SAP figures.
 
+For project-owned funds, the overview also compares the sum of adjusted actuals
+and commitments across every available fiscal year and every active fund of the
+project with the total grant budget stored in Planning. The resulting lifetime
+utilization percentage and total project budget are shown independently of the
+selected annual view. Annual pools, universal funds, and other funds without a
+project assignment do not receive a project-level budget or utilization value.
+The overview also shows the elapsed share of each project's lifetime, based on
+its start date and effective end date. A cost-neutral extension is used as the
+effective end date when configured; progress is bounded between zero and one
+hundred percent.
+
 Setting `SAP_ENABLED=1` also installs a daily synchronization job. It runs at
 05:00 by default and can be changed through `SAP_SYNC_CRON`. The job invokes
 `sync_sap` without `--year`, so every run automatically uses the current fiscal

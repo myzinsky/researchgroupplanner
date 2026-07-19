@@ -14,13 +14,14 @@ from django.test import SimpleTestCase, TestCase, override_settings
 from openpyxl import Workbook
 from selenium.common.exceptions import StaleElementReferenceException
 
-from projects.models import Project, SAPFund
+from projects.models import AnnualPool, Project, SAPFund
 from sap_integration.cache import fund_values, load_year
 from sap_integration.cleaning import clean_fund_values, clean_transactions
 from sap_integration.config import SAPConfig, SAPConfigurationError
 from sap_integration.backends.wuerzburg import WuerzburgWebGUIBackend
 from sap_integration.parser import parse_downloaded_reports
 from sap_integration.sync import SAPSyncResult, run_sync
+from sap_integration.views import _project_time_percentage
 from sap_integration.workbooks import same_nonempty_workbook_content
 
 
@@ -329,6 +330,41 @@ class SAPCleaningTests(SimpleTestCase):
         self.assertEqual(funding[0]["amount"], Decimal("-500.00"))
 
 
+class SAPProjectTimeTests(SimpleTestCase):
+    def test_time_percentage_is_bounded_and_uses_project_dates(self):
+        project = Project(
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 1, 11),
+            budget_total=Decimal("1000.00"),
+        )
+
+        self.assertEqual(
+            _project_time_percentage(project, date(2025, 12, 31)),
+            Decimal("0.00"),
+        )
+        self.assertEqual(
+            _project_time_percentage(project, date(2026, 1, 6)),
+            Decimal("50.00"),
+        )
+        self.assertEqual(
+            _project_time_percentage(project, date(2026, 1, 20)),
+            Decimal("100.00"),
+        )
+
+    def test_time_percentage_uses_cost_neutral_extension(self):
+        project = Project(
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 1, 11),
+            extension_planning_date=date(2026, 1, 21),
+            budget_total=Decimal("1000.00"),
+        )
+
+        self.assertEqual(
+            _project_time_percentage(project, date(2026, 1, 11)),
+            Decimal("50.00"),
+        )
+
+
 class SAPViewsTests(TestCase):
     def setUp(self):
         self.data_directory = tempfile.TemporaryDirectory()
@@ -366,7 +402,78 @@ class SAPViewsTests(TestCase):
         self.assertContains(response, "WEB-FUND")
         self.assertContains(response, "2026")
         self.assertContains(response, "Obligo")
+        self.assertContains(response, "Gesamtbudget")
+        self.assertContains(response, "Auslastung")
         self.assertNotContains(response, "NO-DATA")
+
+        lifetime = response.context["rows"][0]["lifetime"]
+        self.assertEqual(lifetime["budget"], Decimal("1000.00"))
+        self.assertEqual(lifetime["used"], Decimal("300.00"))
+        self.assertEqual(lifetime["utilization"], Decimal("30.00"))
+        self.assertIn("time_percentage", lifetime)
+        self.assertEqual(lifetime["utilization_bar_width"], "30.00")
+        self.assertContains(response, "Auslastung / Laufzeit")
+        self.assertContains(response, "Finanzielle Auslastung")
+        self.assertContains(response, "Vergangene Projektlaufzeit")
+        self.assertContains(response, 'class="table table-hover table-bordered align-top"', html=False)
+        self.assertNotContains(response, "bis 31.12.2026")
+
+    def test_project_utilization_combines_all_years_and_funds(self):
+        second_fund = SAPFund.objects.create(
+            fund_number="WEB-SECOND",
+            project=self.project,
+        )
+        _write_processed_cache(
+            self.data_dir,
+            self.fund.fund_number,
+            year=2025,
+            transactions=[
+                _transaction("actual", "Partner", "Alt", "50.00"),
+                _transaction("commitment", "Partner", "Alt vorgemerkt", "100.00"),
+            ],
+        )
+        _write_processed_cache(
+            self.data_dir,
+            second_fund.fund_number,
+            transactions=[
+                _transaction("actual", "Partner", "Zweiter Fonds", "100.00"),
+            ],
+        )
+
+        with self.settings(SAP_ENABLED=True, SAP_DATA_DIR=self.data_dir):
+            response = self.client.get(
+                reverse("sap_integration:overview_year", args=[2026])
+            )
+
+        project_rows = [
+            row for row in response.context["rows"] if row["fund"].project_id
+        ]
+        self.assertEqual(len(project_rows), 2)
+        for row in project_rows:
+            self.assertEqual(row["lifetime"]["used"], Decimal("550.00"))
+            self.assertEqual(row["lifetime"]["utilization"], Decimal("55.00"))
+
+    def test_non_project_fund_has_no_lifetime_budget_or_utilization(self):
+        annual_pool = AnnualPool.objects.create(title="Pool")
+        pool_fund = SAPFund.objects.create(
+            fund_number="POOL-FUND",
+            annual_pool=annual_pool,
+        )
+        _write_processed_cache(
+            self.data_dir,
+            pool_fund.fund_number,
+            transactions=[
+                _transaction("actual", "Partner", "Pool-Ausgabe", "25.00"),
+            ],
+        )
+
+        with self.settings(SAP_ENABLED=True, SAP_DATA_DIR=self.data_dir):
+            response = self.client.get(reverse("sap_integration:overview"))
+
+        pool_row = next(
+            row for row in response.context["rows"] if row["fund"] == pool_fund
+        )
+        self.assertIsNone(pool_row["lifetime"])
 
     def test_fund_detail_displays_actual_and_grey_commitment(self):
         with self.settings(SAP_ENABLED=True, SAP_DATA_DIR=self.data_dir):
@@ -433,7 +540,7 @@ class SAPViewsTests(TestCase):
         self.assertEqual(response.context["values"]["remaining"], Decimal("750.00"))
         self.assertContains(response, 'class="table-success"', html=False)
         self.assertContains(response, "Mittelzufluss")
-        self.assertContains(response, "500,00 € Mittelzuflüsse nicht eingerechnet")
+        self.assertContains(response, "500,00 €")
 
     def test_overview_uses_adjusted_values_for_configured_fund(self):
         self.fund.treat_negative_actuals_as_funding = True
@@ -452,10 +559,14 @@ class SAPViewsTests(TestCase):
             response = self.client.get(reverse("sap_integration:overview"))
 
         values = response.context["rows"][0]["values"]
+        lifetime = response.context["rows"][0]["lifetime"]
         self.assertEqual(values["actual_total"], Decimal("200.00"))
         self.assertEqual(values["funding_total"], Decimal("500.00"))
         self.assertEqual(values["remaining"], Decimal("750.00"))
+        self.assertEqual(lifetime["used"], Decimal("250.00"))
+        self.assertEqual(lifetime["utilization"], Decimal("25.00"))
         self.assertContains(response, "Mittelzuflüsse bereinigt")
+        self.assertNotContains(response, "Mittelzuflüsse nicht eingerechnet")
 
     def test_fund_without_entries_is_not_available_for_year(self):
         with self.settings(SAP_ENABLED=True, SAP_DATA_DIR=self.data_dir):
@@ -492,7 +603,7 @@ def _transaction(transaction_type, business_partner, position, amount):
     }
 
 
-def _write_processed_cache(data_dir, fund_number, transactions=None):
+def _write_processed_cache(data_dir, fund_number, transactions=None, year=2026):
     processed_dir = data_dir / "processed"
     processed_dir.mkdir(parents=True, exist_ok=True)
     transactions = transactions or [
@@ -524,21 +635,25 @@ def _write_processed_cache(data_dir, fund_number, transactions=None):
         Decimal("0"),
     )
     combined_total = actual_total + commitments_total
-    payload = {
-        "schema_version": 1,
-        "year": 2026,
-        "generated_at": "2026-07-17T10:00:00+00:00",
-        "funds": {
-            fund_number: {
-                "fund_number": fund_number,
-                "has_budget": True,
-                "budget": "1000.00",
-                "actual_total": str(actual_total),
-                "commitments_total": str(commitments_total),
-                "combined_total": str(combined_total),
-                "remaining": str(Decimal("1000.00") - combined_total),
-                "transactions": transactions,
-            }
-        },
+    cache_path = processed_dir / f"{year}.json"
+    payload = (
+        json.loads(cache_path.read_text(encoding="utf-8"))
+        if cache_path.exists()
+        else {
+            "schema_version": 1,
+            "year": year,
+            "generated_at": "2026-07-17T10:00:00+00:00",
+            "funds": {},
+        }
+    )
+    payload["funds"][fund_number] = {
+        "fund_number": fund_number,
+        "has_budget": True,
+        "budget": "1000.00",
+        "actual_total": str(actual_total),
+        "commitments_total": str(commitments_total),
+        "combined_total": str(combined_total),
+        "remaining": str(Decimal("1000.00") - combined_total),
+        "transactions": transactions,
     }
-    (processed_dir / "2026.json").write_text(json.dumps(payload), encoding="utf-8")
+    cache_path.write_text(json.dumps(payload), encoding="utf-8")

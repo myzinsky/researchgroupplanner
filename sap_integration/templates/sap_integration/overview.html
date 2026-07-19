@@ -23,16 +23,18 @@
         <div class="alert alert-warning">{{ cache_error }}</div>
     {% elif selected_year %}
         <div class="table-responsive">
-            <table class="table table-hover table-bordered align-middle">
+            <table class="table table-hover table-bordered align-top">
                 <thead class="table-light">
                     <tr>
                         <th>Projekt / Pool</th>
                         <th>Fonds</th>
-                        <th class="text-end">Budget</th>
-                        <th class="text-end">Bezahlt</th>
-                        <th class="text-end">Obligo</th>
-                        <th class="text-end">Ist + Obligo</th>
-                        <th class="text-end">Rest</th>
+                        <th class="text-end text-nowrap">Budget</th>
+                        <th class="text-end text-nowrap">Bezahlt</th>
+                        <th class="text-end text-nowrap">Obligo</th>
+                        <th class="text-end text-nowrap">Ist + Obligo</th>
+                        <th class="text-end text-nowrap">Rest</th>
+                        <th class="text-end text-nowrap">Gesamtbudget</th>
+                        <th class="text-end text-nowrap" style="min-width: 11rem;">Auslastung / Laufzeit</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -51,33 +53,65 @@
                                 {% endif %}
                             </td>
                             {% if row.values %}
-                                <td class="text-end">
+                                <td class="text-end text-nowrap">
                                     {% if row.values.has_budget %}{{ row.values.budget|floatformat:"2g" }} €{% else %}<span class="text-muted">kein SAP-Budget</span>{% endif %}
                                 </td>
-                                <td class="text-end">
+                                <td class="text-end text-nowrap">
                                     {{ row.values.actual_total|floatformat:"2g" }} €
                                     {% if row.values.funding_total %}
-                                        <div class="small text-success">
-                                            {{ row.values.funding_total|floatformat:"2g" }} € Mittelzuflüsse nicht eingerechnet
-                                        </div>
+                                        <div class="small text-success">{{ row.values.funding_total|floatformat:"2g" }} €</div>
                                     {% endif %}
                                 </td>
-                                <td class="text-end table-secondary">{{ row.values.commitments_total|floatformat:"2g" }} €</td>
-                                <td class="text-end fw-semibold">{{ row.values.combined_total|floatformat:"2g" }} €</td>
-                                <td class="text-end">
+                                <td class="text-end text-nowrap">{{ row.values.commitments_total|floatformat:"2g" }} €</td>
+                                <td class="text-end text-nowrap fw-semibold">{{ row.values.combined_total|floatformat:"2g" }} €</td>
+                                <td class="text-end text-nowrap">
                                     {% if row.values.remaining is not None %}{{ row.values.remaining|floatformat:"2g" }} €{% else %}<span class="text-muted">–</span>{% endif %}
                                 </td>
                             {% else %}
                                 <td colspan="5" class="text-center text-muted">Keine Daten in diesem Export</td>
                             {% endif %}
+                            {% if row.lifetime %}
+                                <td class="text-end text-nowrap">{{ row.lifetime.budget|floatformat:"2g" }} €</td>
+                                <td class="text-end text-nowrap {% if row.lifetime.is_over_budget %}text-danger{% endif %}">
+                                    {% if row.lifetime.utilization is not None %}
+                                        <span class="fw-semibold">{{ row.lifetime.used|floatformat:"2g" }} €</span>
+                                        <div class="d-flex justify-content-between gap-3 small mt-1 {% if row.lifetime.is_over_budget %}text-danger{% else %}text-muted{% endif %}">
+                                            <span>Auslastung</span>
+                                            <span>{{ row.lifetime.utilization|floatformat:"2g" }} %</span>
+                                        </div>
+                                        <div class="progress" style="height: 0.4rem;" role="progressbar"
+                                             aria-label="Finanzielle Auslastung"
+                                             aria-valuenow="{{ row.lifetime.utilization_bar_width }}"
+                                             aria-valuemin="0" aria-valuemax="100">
+                                            <div class="progress-bar {% if row.lifetime.is_over_budget %}bg-danger{% endif %}"
+                                                 style="width: {{ row.lifetime.utilization_bar_width }}%"></div>
+                                        </div>
+                                        <div class="d-flex justify-content-between gap-3 small text-muted mt-2">
+                                            <span>Laufzeit</span>
+                                            <span>{{ row.lifetime.time_percentage|floatformat:"2g" }} %</span>
+                                        </div>
+                                        <div class="progress" style="height: 0.4rem;" role="progressbar"
+                                             aria-label="Vergangene Projektlaufzeit"
+                                             aria-valuenow="{{ row.lifetime.time_bar_width }}"
+                                             aria-valuemin="0" aria-valuemax="100">
+                                            <div class="progress-bar bg-secondary"
+                                                 style="width: {{ row.lifetime.time_bar_width }}%"></div>
+                                        </div>
+                                    {% else %}
+                                        <span class="text-muted">–</span>
+                                    {% endif %}
+                                </td>
+                            {% else %}
+                                <td class="text-end text-muted">–</td>
+                                <td class="text-end text-muted">–</td>
+                            {% endif %}
                         </tr>
                     {% empty %}
-                        <tr><td colspan="7" class="text-center text-muted">Keine aktiven SAP-Fonds konfiguriert.</td></tr>
+                        <tr><td colspan="9" class="text-center text-muted">Keine aktiven SAP-Fonds konfiguriert.</td></tr>
                     {% endfor %}
                 </tbody>
             </table>
         </div>
-        <p class="small text-muted mb-1">Grau hinterlegte Beträge sind Obligo und damit noch nicht zahlungswirksam.</p>
         <p class="small text-success">Grün gekennzeichnete Mittelzuflüsse werden nicht als Ausgaben verrechnet.</p>
     {% else %}
         <div class="alert alert-secondary">
