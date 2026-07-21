@@ -158,6 +158,68 @@ class StaffStatusWarningTests(TestCase):
         )
 
 
+class FundingAllocationCoverageWarningTests(TestCase):
+    def setUp(self):
+        user = get_user_model().objects.create_user(
+            username="allocation-warning-user",
+            password="test-password",
+        )
+        self.client.force_login(user)
+        self.staff_member = StaffMember.objects.create(
+            first_name="Daily",
+            last_name="Allocation",
+            status="active",
+        )
+        self.employment = Employment.objects.create(
+            staff_member=self.staff_member,
+            start_date=date(2024, 4, 1),
+            end_date=date(2025, 2, 16),
+            percentage=Decimal("100.00"),
+        )
+
+    def _allocation(self, start_date, end_date):
+        return StaffFundingAllocation.objects.create(
+            employment=self.employment,
+            is_universal=True,
+            percentage=Decimal("100.00"),
+            start_date=start_date,
+            end_date=end_date,
+        )
+
+    def test_adjacent_allocations_in_same_month_do_not_overlap(self):
+        self._allocation(date(2024, 4, 1), date(2024, 8, 15))
+        self._allocation(date(2024, 8, 16), date(2025, 2, 16))
+
+        response = self.client.get(reverse("warnings"))
+
+        self.assertNotContains(
+            response,
+            f"Überallokation bei {self.staff_member}",
+        )
+        self.assertNotContains(
+            response,
+            f"Unterallokation bei {self.staff_member}",
+        )
+
+    def test_real_single_day_overlap_is_reported_exactly(self):
+        self._allocation(date(2024, 4, 1), date(2024, 8, 16))
+        self._allocation(date(2024, 8, 16), date(2025, 2, 16))
+
+        response = self.client.get(reverse("warnings"))
+
+        self.assertContains(response, f"Überallokation bei {self.staff_member}")
+        self.assertContains(response, "16.08.2024 (200.00%)")
+
+    def test_real_single_day_gap_is_reported_exactly(self):
+        self._allocation(date(2024, 4, 1), date(2024, 8, 14))
+        self._allocation(date(2024, 8, 16), date(2025, 2, 16))
+
+        response = self.client.get(reverse("warnings"))
+
+        self.assertContains(response, f"Unterallokation bei {self.staff_member}")
+        self.assertContains(response, "15.08.2024 (0.00%)")
+
+
 class SAPSalaryWarningTests(TestCase):
     def setUp(self):
         self.data_directory = tempfile.TemporaryDirectory()

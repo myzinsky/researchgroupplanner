@@ -41,6 +41,58 @@ def _month_key(date_obj):
     return date_obj.strftime("%Y-%m")
 
 
+def _allocation_coverage_periods(employment, allocations):
+    expected = Decimal(employment.percentage)
+    under_days = []
+    over_days = []
+    current = employment.start_date
+
+    while current <= employment.end_date:
+        total = sum(
+            (
+                Decimal(allocation.percentage)
+                for allocation in allocations
+                if allocation.start_date <= current
+                and (allocation.end_date or employment.end_date) >= current
+            ),
+            Decimal("0.00"),
+        )
+        if total < expected:
+            under_days.append((current, total))
+        elif total > expected:
+            over_days.append((current, total))
+        current += timedelta(days=1)
+
+    return _group_allocation_days(under_days), _group_allocation_days(over_days)
+
+
+def _group_allocation_days(days):
+    periods = []
+    for current, percentage in days:
+        if (
+            periods
+            and periods[-1]["end"] + timedelta(days=1) == current
+            and periods[-1]["percentage"] == percentage
+        ):
+            periods[-1]["end"] = current
+        else:
+            periods.append(
+                {
+                    "start": current,
+                    "end": current,
+                    "percentage": percentage,
+                }
+            )
+    return periods
+
+
+def _allocation_period_label(period):
+    start = period["start"].strftime("%d.%m.%Y")
+    end = period["end"].strftime("%d.%m.%Y")
+    date_label = start if start == end else f"{start}–{end}"
+    return f"{date_label} ({_decimal_2(period['percentage'])}%)"
+
+
 def _decimal_2(value):
     return format(Decimal(value), ".2f")
 
@@ -334,7 +386,6 @@ def warnings(request):
 
     for employment in employments:
         allocations = list(employment.stafffundingallocation_set.all())
-        expected = Decimal(employment.percentage)
 
         if not allocations:
             warnings_list.append({
@@ -349,52 +400,50 @@ def warnings(request):
             })
             continue
 
-        under_months = []
-        over_months = []
+        under_periods, over_periods = _allocation_coverage_periods(
+            employment,
+            allocations,
+        )
 
-        # Compare per month contract percentage vs summed allocations.
-        for month in _month_iter(employment.start_date, employment.end_date):
-            total = Decimal("0.00")
-            for allocation in allocations:
-                alloc_start = allocation.start_date
-                alloc_end = allocation.end_date or employment.end_date
-                if alloc_start.replace(day=1) <= month <= alloc_end.replace(day=1):
-                    total += Decimal(allocation.percentage)
-
-            if total < expected:
-                under_months.append((_month_key(month), total))
-            elif total > expected:
-                over_months.append((_month_key(month), total))
-
-        if under_months:
+        if under_periods:
             sample = ", ".join(
-                f"{month} ({_decimal_2(percentage)}%)"
-                for month, percentage in under_months[:4]
+                _allocation_period_label(period)
+                for period in under_periods[:4]
             )
-            if len(under_months) > 4:
+            if len(under_periods) > 4:
                 sample += ", ..."
+            period_count = (
+                "1 Zeitraum liegt"
+                if len(under_periods) == 1
+                else f"{len(under_periods)} Zeiträume liegen"
+            )
             warnings_list.append({
                 "severity": "warning",
                 "title": f"Unterallokation bei {employment.staff_member}",
                 "detail": (
-                    f"{len(under_months)} Monat(e) liegen unter dem Vertragsanteil von "
+                    f"{period_count} unter dem Vertragsanteil von "
                     f"{_decimal_2(employment.percentage)}%: {sample}"
                 ),
                 "link": f"/staffing/details/{employment.staff_member.id}/",
             })
 
-        if over_months:
+        if over_periods:
             sample = ", ".join(
-                f"{month} ({_decimal_2(percentage)}%)"
-                for month, percentage in over_months[:4]
+                _allocation_period_label(period)
+                for period in over_periods[:4]
             )
-            if len(over_months) > 4:
+            if len(over_periods) > 4:
                 sample += ", ..."
+            period_count = (
+                "1 Zeitraum liegt"
+                if len(over_periods) == 1
+                else f"{len(over_periods)} Zeiträume liegen"
+            )
             warnings_list.append({
                 "severity": "danger",
                 "title": f"Überallokation bei {employment.staff_member}",
                 "detail": (
-                    f"{len(over_months)} Monat(e) liegen über dem Vertragsanteil von "
+                    f"{period_count} über dem Vertragsanteil von "
                     f"{_decimal_2(employment.percentage)}%: {sample}"
                 ),
                 "link": f"/staffing/details/{employment.staff_member.id}/",
