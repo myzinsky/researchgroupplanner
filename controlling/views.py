@@ -398,7 +398,11 @@ def warnings(request):
                 "detail": "Person ist als Alumni markiert, hat aber aktive Anstellung(en).",
                 "link": f"/staffing/details/{staff_member.id}/",
             })
-        if staff_member.status in {"active", "in_hire"} and not active_employments:
+        if (
+            staff_member.status in {"active", "in_hire"}
+            and not staff_member.is_leadership
+            and not active_employments
+        ):
             warnings_list.append({
                 "severity": "warning",
                 "title": f"Status-Inkonsistenz bei {staff_member}",
