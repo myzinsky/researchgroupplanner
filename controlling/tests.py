@@ -4,6 +4,7 @@ from calendar import monthrange
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
@@ -11,6 +12,7 @@ from django.urls import reverse
 
 from projects.models import Project, SAPFund, StaffBudgetItem, StaffBudgetItemEligibility
 from staffing.models import Employment, EmploymentSalaries, StaffFundingAllocation, StaffMember
+from sap_integration.salary_sync import apply_salary_comparison as apply_salary_value
 
 
 class BudgetWarningTests(TestCase):
@@ -205,10 +207,10 @@ class SAPSalaryWarningTests(TestCase):
         with self.settings(SAP_ENABLED=True, SAP_DATA_DIR=self.data_dir):
             response = self.client.get(reverse("warnings"))
 
-        self.assertContains(response, "SAP-Gehaltsabweichung bei Test Person")
+        self.assertContains(response, "SAP-Gehaltsabweichungen bei Test Person")
         self.assertContains(response, "SAP-Ist 1100.00 EUR")
         self.assertContains(response, "Planung 1000.00 EUR")
-        self.assertContains(response, "Ist-Stand in Planung übernehmen")
+        self.assertContains(response, "Alle SAP-Werte in Planung übernehmen")
 
     def test_sap_update_changes_only_selected_month(self):
         _write_sap_salary_cache(
@@ -242,7 +244,7 @@ class SAPSalaryWarningTests(TestCase):
             ],
         )
         self.assertContains(response, "wurde in die Planung übernommen")
-        self.assertNotContains(response, "SAP-Gehaltsabweichung bei Test Person")
+        self.assertNotContains(response, "SAP-Gehaltsabweichungen bei Test Person")
 
     def test_consecutive_sap_updates_with_same_salary_are_merged(self):
         january_url = reverse(
@@ -295,7 +297,7 @@ class SAPSalaryWarningTests(TestCase):
             warning_response = self.client.get(reverse("warnings"))
 
         self.assertContains(warning_response, "SAP-Obligo 1200.00 EUR")
-        self.assertContains(warning_response, "Obligo in Planung übernehmen")
+        self.assertContains(warning_response, "Alle SAP-Werte in Planung übernehmen")
 
         url = reverse(
             "apply_sap_salary",
@@ -324,7 +326,7 @@ class SAPSalaryWarningTests(TestCase):
             response = self.client.get(reverse("warnings"))
 
         self.assertContains(response, "SAP-Ist 1100.00 EUR")
-        self.assertContains(response, "Ist-Stand in Planung übernehmen")
+        self.assertContains(response, "Alle SAP-Werte in Planung übernehmen")
         self.assertNotContains(response, "unterschiedliche SAP-Ist-")
 
     def test_different_actual_and_commitment_block_update(self):
@@ -357,7 +359,7 @@ class SAPSalaryWarningTests(TestCase):
 
         self.assertContains(
             response,
-            "SAP-Gehaltsabweichung bei Different Planning Name",
+            "SAP-Gehaltsabweichungen bei Different Planning Name",
         )
         self.assertNotContains(response, "SAP-Geschäftspartner nicht zugeordnet")
 
@@ -370,7 +372,7 @@ class SAPSalaryWarningTests(TestCase):
             response = self.client.get(reverse("warnings"))
 
         self.assertContains(response, "SAP-Geschäftspartner nicht zugeordnet")
-        self.assertNotContains(response, "Ist-Stand in Planung übernehmen")
+        self.assertNotContains(response, "Alle SAP-Werte in Planung übernehmen")
 
     def test_partial_employment_month_has_no_automatic_update(self):
         self.employment.start_date = date(2026, 1, 15)
@@ -383,7 +385,100 @@ class SAPSalaryWarningTests(TestCase):
             response = self.client.get(reverse("warnings"))
 
         self.assertContains(response, "Teilmonate können nicht automatisch")
-        self.assertNotContains(response, "Ist-Stand in Planung übernehmen")
+        self.assertNotContains(response, "Alle SAP-Werte in Planung übernehmen")
+
+    def test_multiple_months_are_grouped_and_applied_together(self):
+        _write_sap_salary_cache(
+            self.data_dir,
+            self.fund.fund_number,
+            business_partner="Person, Test",
+            amount="1100.00",
+            additional_salary_rows=[
+                ("Februar", "1100.00", "commitment"),
+                ("März", "1200.00", "commitment"),
+            ],
+        )
+
+        with self.settings(SAP_ENABLED=True, SAP_DATA_DIR=self.data_dir):
+            warning_response = self.client.get(reverse("warnings"))
+
+        self.assertContains(
+            warning_response,
+            "SAP-Gehaltsabweichungen bei Test Person",
+            count=1,
+        )
+        self.assertContains(warning_response, "Januar 2026: SAP-Ist 1100.00 EUR")
+        self.assertContains(warning_response, "Februar 2026: SAP-Obligo 1100.00 EUR")
+        self.assertContains(warning_response, "März 2026: SAP-Obligo 1200.00 EUR")
+        self.assertContains(
+            warning_response,
+            "Alle SAP-Werte in Planung übernehmen",
+            count=1,
+        )
+
+        url = reverse("apply_all_sap_salaries", args=[self.staff_member.id])
+        with self.settings(SAP_ENABLED=True, SAP_DATA_DIR=self.data_dir):
+            update_response = self.client.post(url, follow=True)
+
+        salaries = list(
+            self.employment.employmentsalaries_set.order_by("start_date").values_list(
+                "start_date",
+                "end_date",
+                "salary",
+            )
+        )
+        self.assertEqual(
+            salaries,
+            [
+                (date(2026, 1, 1), date(2026, 2, 28), Decimal("1100.00")),
+                (date(2026, 3, 1), date(2026, 3, 31), Decimal("1200.00")),
+            ],
+        )
+        self.assertContains(update_response, "3 SAP-Gehaltsmonat(e)")
+        self.assertNotContains(
+            update_response,
+            "SAP-Gehaltsabweichungen bei Test Person",
+        )
+
+    def test_bulk_update_rolls_back_all_months_if_one_update_fails(self):
+        _write_sap_salary_cache(
+            self.data_dir,
+            self.fund.fund_number,
+            business_partner="Person, Test",
+            amount="1100.00",
+            additional_salary_rows=[
+                ("Februar", "1200.00", "commitment"),
+            ],
+        )
+        call_count = 0
+
+        def apply_then_fail(comparison):
+            nonlocal call_count
+            call_count += 1
+            apply_salary_value(comparison)
+            if call_count == 2:
+                raise ValueError("Simulierter Fehler")
+
+        url = reverse("apply_all_sap_salaries", args=[self.staff_member.id])
+        with self.settings(SAP_ENABLED=True, SAP_DATA_DIR=self.data_dir):
+            with patch(
+                "controlling.views.apply_salary_comparison",
+                side_effect=apply_then_fail,
+            ):
+                response = self.client.post(url, follow=True)
+
+        salaries = list(
+            self.employment.employmentsalaries_set.values_list(
+                "start_date",
+                "end_date",
+                "salary",
+            )
+        )
+        self.assertEqual(
+            salaries,
+            [(date(2026, 1, 1), date(2026, 3, 31), Decimal("1000.00"))],
+        )
+        self.assertContains(response, "Simulierter Fehler")
 
 
 def _write_sap_salary_cache(
@@ -394,6 +489,7 @@ def _write_sap_salary_cache(
     month_name="Januar",
     transaction_type="actual",
     additional_commitment_amount=None,
+    additional_salary_rows=None,
 ):
     processed_dir = Path(data_dir) / "processed"
     processed_dir.mkdir(parents=True, exist_ok=True)
@@ -438,12 +534,50 @@ def _write_sap_salary_cache(
                 "booking_date": "2026-01-31",
             }
         )
+    for extra_month_name, extra_amount, extra_type in additional_salary_rows or []:
+        extra_month_number = {
+            "Januar": 1,
+            "Februar": 2,
+            "März": 3,
+            "April": 4,
+            "Mai": 5,
+            "Juni": 6,
+            "Juli": 7,
+            "August": 8,
+            "September": 9,
+            "Oktober": 10,
+            "November": 11,
+            "Dezember": 12,
+        }[extra_month_name]
+        extra_position = (
+            f"Gehalt {extra_month_name} 2026"
+            if extra_type == "actual"
+            else (
+                f"Mittelbindung von 01.{extra_month_number:02d}.2026 bis "
+                f"{monthrange(2026, extra_month_number)[1]:02d}."
+                f"{extra_month_number:02d}.2026"
+            )
+        )
+        transactions.append(
+            {
+                "type": extra_type,
+                "business_partner": business_partner,
+                "position": extra_position,
+                "amount": extra_amount,
+                "booking_date": "2026-01-31",
+            }
+        )
     actual_total = Decimal(amount) if transaction_type == "actual" else Decimal("0")
     commitments_total = (
         Decimal(amount) if transaction_type == "commitment" else Decimal("0")
     )
     if additional_commitment_amount is not None:
         commitments_total += Decimal(additional_commitment_amount)
+    for _, extra_amount, extra_type in additional_salary_rows or []:
+        if extra_type == "actual":
+            actual_total += Decimal(extra_amount)
+        else:
+            commitments_total += Decimal(extra_amount)
     combined_total = actual_total + commitments_total
     payload = {
         "schema_version": 1,

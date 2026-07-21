@@ -45,6 +45,26 @@ def _decimal_2(value):
     return format(Decimal(value), ".2f")
 
 
+def _salary_comparison_detail(comparison):
+    if comparison.source_conflict:
+        detail = (
+            f"{comparison.month_label}: SAP-Ist "
+            f"{_decimal_2(comparison.actual_amount)} EUR, SAP-Obligo "
+            f"{_decimal_2(comparison.commitment_amount)} EUR, Planung "
+            f"{_decimal_2(comparison.planned)} EUR."
+        )
+    else:
+        detail = (
+            f"{comparison.month_label}: {comparison.source_label} "
+            f"{_decimal_2(comparison.sap_amount)} EUR, Planung "
+            f"{_decimal_2(comparison.planned)} EUR, Differenz "
+            f"{_decimal_2(comparison.difference)} EUR."
+        )
+    if comparison.blocking_reason:
+        detail += f" {comparison.blocking_reason}"
+    return detail
+
+
 def _project_overhead_available_sum(project):
     total = Decimal("0.00")
     for item in project.overheadbudgetitem_set.all():
@@ -469,36 +489,39 @@ def warnings(request):
                     ),
                     "link": "/admin/staffing/staffmember/",
                 })
+            salary_groups = {}
             for comparison in salary_result.comparisons:
                 if comparison.sap_amount == comparison.planned and not comparison.source_conflict:
                     continue
-                if comparison.source_conflict:
-                    detail = (
-                        f"{comparison.month_label}: SAP-Ist "
-                        f"{_decimal_2(comparison.actual_amount)} EUR, SAP-Obligo "
-                        f"{_decimal_2(comparison.commitment_amount)} EUR, Planung "
-                        f"{_decimal_2(comparison.planned)} EUR."
-                    )
-                else:
-                    detail = (
-                        f"{comparison.month_label}: {comparison.source_label} "
-                        f"{_decimal_2(comparison.sap_amount)} EUR, Planung "
-                        f"{_decimal_2(comparison.planned)} EUR, Differenz "
-                        f"{_decimal_2(comparison.difference)} EUR."
-                    )
-                if comparison.blocking_reason:
-                    detail += f" {comparison.blocking_reason}"
+                group = salary_groups.setdefault(
+                    comparison.staff_member.id,
+                    {
+                        "staff_member": comparison.staff_member,
+                        "comparisons": [],
+                    },
+                )
+                group["comparisons"].append(comparison)
+
+            for group in salary_groups.values():
+                comparisons = sorted(
+                    group["comparisons"],
+                    key=lambda comparison: comparison.month,
+                )
+                applicable_count = sum(
+                    comparison.can_apply for comparison in comparisons
+                )
                 warnings_list.append({
                     "severity": "warning",
-                    "title": f"SAP-Gehaltsabweichung bei {comparison.staff_member}",
-                    "detail": detail,
-                    "link": f"/staffing/details/{comparison.staff_member.id}/",
-                    "sap_salary_update": (
-                        comparison.staff_member.id,
-                        comparison.month.year,
-                        comparison.month.month,
-                    ) if comparison.can_apply else None,
-                    "sap_salary_source": comparison.source,
+                    "title": f"SAP-Gehaltsabweichungen bei {group['staff_member']}",
+                    "details": [
+                        _salary_comparison_detail(comparison)
+                        for comparison in comparisons
+                    ],
+                    "link": f"/staffing/details/{group['staff_member'].id}/",
+                    "sap_salary_bulk_update": (
+                        group["staff_member"].id if applicable_count else None
+                    ),
+                    "sap_salary_update_count": applicable_count,
                 })
     severity_order = {"danger": 0, "warning": 1, "info": 2, "success": 3}
     warnings_list.sort(key=lambda item: (severity_order.get(item["severity"], 99), item["title"]))
@@ -597,6 +620,63 @@ def apply_sap_salary(request, staff_id, year, month):
                 request,
                 f"{comparison.source_label} für {comparison.staff_member}, "
                 f"{comparison.month_label}, wurde in die Planung übernommen.",
+            )
+    except (OSError, ValueError, SAPCacheError) as error:
+        messages.error(request, str(error))
+    return redirect("warnings")
+
+
+@login_required
+@require_POST
+def apply_all_sap_salaries(request, staff_id):
+    if not settings.SAP_ENABLED:
+        messages.error(request, "Die SAP-Integration ist deaktiviert.")
+        return redirect("warnings")
+
+    try:
+        result = build_salary_comparisons(settings.SAP_DATA_DIR)
+        differing = [
+            comparison
+            for comparison in result.comparisons
+            if comparison.staff_member.id == staff_id
+            and (
+                comparison.sap_amount != comparison.planned
+                or comparison.source_conflict
+            )
+        ]
+        applicable = [
+            comparison for comparison in differing if comparison.can_apply
+        ]
+        blocked_count = len(differing) - len(applicable)
+
+        if not differing:
+            messages.info(
+                request,
+                "Für diese Person sind keine SAP-Gehaltsabweichungen mehr vorhanden.",
+            )
+            return redirect("warnings")
+        if not applicable:
+            messages.error(
+                request,
+                "Keine der aufgeführten Abweichungen kann sicher übernommen werden.",
+            )
+            return redirect("warnings")
+
+        with transaction.atomic():
+            for comparison in sorted(applicable, key=lambda item: item.month):
+                apply_salary_comparison(comparison)
+
+        staff_member = applicable[0].staff_member
+        messages.success(
+            request,
+            f"{len(applicable)} SAP-Gehaltsmonat(e) für {staff_member} wurden "
+            "in die Planung übernommen.",
+        )
+        if blocked_count:
+            messages.warning(
+                request,
+                f"{blocked_count} Monat(e) wurden wegen Konflikten oder "
+                "unsicherer Zuordnung nicht verändert.",
             )
     except (OSError, ValueError, SAPCacheError) as error:
         messages.error(request, str(error))

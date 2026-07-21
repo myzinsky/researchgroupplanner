@@ -13,7 +13,15 @@
                 <div class="d-flex justify-content-between align-items-start">
                     <div>
                         <h5 class="mb-1">{{ warning.title }}</h5>
-                        <p class="mb-1">{{ warning.detail }}</p>
+                        {% if warning.details %}
+                            <ul class="mb-1">
+                                {% for detail in warning.details %}
+                                    <li>{{ detail }}</li>
+                                {% endfor %}
+                            </ul>
+                        {% else %}
+                            <p class="mb-1">{{ warning.detail }}</p>
+                        {% endif %}
                         <a href="{{ warning.link }}">Öffnen</a>
                         {% if warning.merge_salary_ids %}
                             <form method="post" action="{% url 'merge_salary_overlap' warning.merge_salary_ids.0 warning.merge_salary_ids.1 %}" class="d-inline ms-2" onsubmit="return confirm('Überlappende Gehaltssätze zusammenführen? Die betroffenen Einträge werden ersetzt.');">
@@ -21,10 +29,10 @@
                                 <button type="submit" class="btn btn-sm btn-outline-primary">Zusammenführen</button>
                             </form>
                         {% endif %}
-                        {% if warning.sap_salary_update %}
-                            <form method="post" action="{% url 'apply_sap_salary' warning.sap_salary_update.0 warning.sap_salary_update.1 warning.sap_salary_update.2 %}" class="d-inline ms-2" onsubmit="return confirm('{% if warning.sap_salary_source == 'commitment' %}SAP-Obligo{% else %}SAP-Iststand{% endif %} für diesen Monat in die Planung übernehmen? Zukünftige Planzahlen bleiben erhalten.');">
+                        {% if warning.sap_salary_bulk_update %}
+                            <form method="post" action="{% url 'apply_all_sap_salaries' warning.sap_salary_bulk_update %}" class="d-inline ms-2" onsubmit="return confirm('{{ warning.sap_salary_update_count }} SAP-Gehaltsmonat(e) in die Planung übernehmen? Alle Änderungen erfolgen gemeinsam; nicht sicher übernehmbare Monate bleiben unverändert.');">
                                 {% csrf_token %}
-                                <button type="submit" class="btn btn-sm btn-outline-primary">{% if warning.sap_salary_source == 'commitment' %}Obligo{% else %}Ist-Stand{% endif %} in Planung übernehmen</button>
+                                <button type="submit" class="btn btn-sm btn-outline-primary">Alle SAP-Werte in Planung übernehmen</button>
                             </form>
                         {% endif %}
                     </div>

@@ -22,6 +22,7 @@ from django.contrib.staticfiles.urls import staticfiles_urlpatterns
 
 from controlling.views import (
     annual_pools as controlling_annual_pools,
+    apply_all_sap_salaries as controlling_apply_all_sap_salaries,
     apply_sap_salary as controlling_apply_sap_salary,
     create_manual_backup,
     main as controlling_main,
@@ -52,6 +53,11 @@ urlpatterns = [
         "warnings/apply-sap-salary/<int:staff_id>/<int:year>/<int:month>/",
         controlling_apply_sap_salary,
         name="apply_sap_salary",
+    ),
+    path(
+        "warnings/apply-sap-salaries/<int:staff_id>/",
+        controlling_apply_all_sap_salaries,
+        name="apply_all_sap_salaries",
     ),
     path("statistics/", controlling_statistics, name="statistics"),
     path("send-test-email/", send_test_email, name="send_test_email"),
