@@ -296,6 +296,12 @@ Project lists link directly to each project's staffing timeline. Timeline labels
 use a more compact layout, and currency values use non-breaking spacing so that
 the euro sign stays attached to its amount.
 
+Personnel funding allocations support project budget items, state-funded
+positions, annual pool budgets, and a source-independent **Universal project**.
+Exactly one funding source must be selected for each allocation. Universal
+allocations appear in staff details and the main timeline but are not charged to
+a project's planning budget.
+
 ## SAP WebGUI Integration
 
 The SAP integration is disabled by default. For a manual test, set

@@ -916,6 +916,8 @@ def main(request):
                 source = f"Projekt {allocation.budget_item.project.acronym}"
             elif allocation.annual_pool_budget_id:
                 source = f"Annual Pool {allocation.annual_pool_budget.annual_pool.title} ({allocation.annual_pool_budget.year})"
+            elif allocation.is_universal:
+                source = "Universalprojekt"
             else:
                 institute = f" ({allocation.landesstelle.institute.short_name})" if allocation.landesstelle.institute_id else ""
                 source = f"Landesstelle {allocation.landesstelle.title}{institute}"

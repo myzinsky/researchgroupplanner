@@ -60,6 +60,7 @@ class StaffFundingAllocation(models.Model):
     budget_item = models.ForeignKey(StaffBudgetItem, on_delete=models.CASCADE, null=True, blank=True)
     landesstelle = models.ForeignKey(Landesstelle, on_delete=models.CASCADE, null=True, blank=True)
     annual_pool_budget = models.ForeignKey(AnnualPoolBudget, on_delete=models.CASCADE, null=True, blank=True)
+    is_universal = models.BooleanField("Universalprojekt", default=False)
     percentage = models.DecimalField(
         max_digits=5,
         decimal_places=2,
@@ -71,12 +72,17 @@ class StaffFundingAllocation(models.Model):
     def clean(self):
         super().clean()
         source_count = sum(
-            source is not None
-            for source in (self.budget_item, self.landesstelle, self.annual_pool_budget)
+            (
+                self.budget_item is not None,
+                self.landesstelle is not None,
+                self.annual_pool_budget is not None,
+                self.is_universal,
+            )
         )
         if source_count != 1:
             raise ValidationError(
-                "Bitte genau eine Finanzierungsquelle angeben: Projektbudget, Landesstelle oder Annual Pool Budget."
+                "Bitte genau eine Finanzierungsquelle angeben: Projektbudget, "
+                "Landesstelle, Annual Pool Budget oder Universalprojekt."
             )
         if self.end_date and self.end_date < self.start_date:
             raise ValidationError("Das Enddatum darf nicht vor dem Startdatum liegen.")
@@ -94,7 +100,9 @@ class StaffFundingAllocation(models.Model):
             return self.budget_item
         if self.landesstelle:
             return self.landesstelle
-        return self.annual_pool_budget
+        if self.annual_pool_budget:
+            return self.annual_pool_budget
+        return "Universalprojekt"
 
     def __str__(self):
         end_date = self.end_date if self.end_date else "offen"
