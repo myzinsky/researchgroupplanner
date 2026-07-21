@@ -19,6 +19,16 @@
                                     <li>{{ detail }}</li>
                                 {% endfor %}
                             </ul>
+                            {% if warning.sap_salary_summary %}
+                                <div class="border-top mt-2 pt-2 mb-2">
+                                    <strong>Gesamt {{ warning.sap_salary_summary.period }}:</strong>
+                                    SAP {{ warning.sap_salary_summary.sap_total }} EUR,
+                                    Planung {{ warning.sap_salary_summary.planned_total }} EUR,
+                                    <span class="fw-semibold{% if warning.sap_salary_summary.is_balanced %} text-success{% endif %}">
+                                        Gesamtabweichung {{ warning.sap_salary_summary.difference }} EUR.
+                                    </span>
+                                </div>
+                            {% endif %}
                         {% else %}
                             <p class="mb-1">{{ warning.detail }}</p>
                         {% endif %}

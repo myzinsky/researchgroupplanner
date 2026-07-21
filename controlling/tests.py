@@ -412,6 +412,13 @@ class SAPSalaryWarningTests(TestCase):
         self.assertContains(warning_response, "März 2026: SAP-Obligo 1200.00 EUR")
         self.assertContains(
             warning_response,
+            "Gesamt Januar 2026 bis März 2026:",
+        )
+        self.assertContains(warning_response, "SAP 3400.00 EUR")
+        self.assertContains(warning_response, "Planung 3000.00 EUR")
+        self.assertContains(warning_response, "Gesamtabweichung 400.00 EUR")
+        self.assertContains(
+            warning_response,
             "Alle SAP-Werte in Planung übernehmen",
             count=1,
         )

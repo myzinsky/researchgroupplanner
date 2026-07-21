@@ -65,6 +65,32 @@ def _salary_comparison_detail(comparison):
     return detail
 
 
+def _salary_comparison_summary(comparisons):
+    sap_total = sum(
+        (comparison.sap_amount for comparison in comparisons),
+        Decimal("0.00"),
+    )
+    planned_total = sum(
+        (comparison.planned for comparison in comparisons),
+        Decimal("0.00"),
+    )
+    difference = sap_total - planned_total
+    if len(comparisons) == 1:
+        period = comparisons[0].month_label
+    else:
+        period = (
+            f"{comparisons[0].month_label} bis "
+            f"{comparisons[-1].month_label}"
+        )
+    return {
+        "period": period,
+        "sap_total": _decimal_2(sap_total),
+        "planned_total": _decimal_2(planned_total),
+        "difference": _decimal_2(difference),
+        "is_balanced": difference.quantize(Decimal("0.01")) == 0,
+    }
+
+
 def _project_overhead_available_sum(project):
     total = Decimal("0.00")
     for item in project.overheadbudgetitem_set.all():
@@ -517,6 +543,7 @@ def warnings(request):
                         _salary_comparison_detail(comparison)
                         for comparison in comparisons
                     ],
+                    "sap_salary_summary": _salary_comparison_summary(comparisons),
                     "link": f"/staffing/details/{group['staff_member'].id}/",
                     "sap_salary_bulk_update": (
                         group["staff_member"].id if applicable_count else None
