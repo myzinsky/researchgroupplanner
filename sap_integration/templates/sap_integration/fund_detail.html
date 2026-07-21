@@ -26,14 +26,14 @@
                 <button class="btn btn-primary dropdown-toggle" type="button"
                         id="statement-year-dropdown" data-bs-toggle="dropdown"
                         aria-expanded="false">
-                    Geschäftsjahr {{ year }}
+                    Geschäftsjahr {{ year|unlocalize }}
                 </button>
                 <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="statement-year-dropdown">
                     {% for available_year in years %}
                         <li>
                             <a class="dropdown-item{% if available_year == year %} active{% endif %}"
                                {% if available_year == year %}aria-current="page"{% endif %}
-                               href="{% url 'sap_integration:fund_detail' available_year fund.id %}{% if is_clean %}?clean=1{% endif %}">{{ available_year }}</a>
+                               href="{% url 'sap_integration:fund_detail' available_year fund.id %}{% if is_clean %}?clean=1{% endif %}">{{ available_year|unlocalize }}</a>
                         </li>
                     {% endfor %}
                 </ul>

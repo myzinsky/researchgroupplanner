@@ -11,14 +11,14 @@
                 <button class="btn btn-primary dropdown-toggle" type="button"
                         id="overview-year-dropdown" data-bs-toggle="dropdown"
                         aria-expanded="false">
-                    Geschäftsjahr {{ selected_year }}
+                    Geschäftsjahr {{ selected_year|unlocalize }}
                 </button>
                 <ul class="dropdown-menu" aria-labelledby="overview-year-dropdown">
                     {% for year in years %}
                         <li>
                             <a class="dropdown-item{% if year == selected_year %} active{% endif %}"
                                {% if year == selected_year %}aria-current="page"{% endif %}
-                               href="{% url 'sap_integration:overview_year' year %}">{{ year }}</a>
+                               href="{% url 'sap_integration:overview_year' year %}">{{ year|unlocalize }}</a>
                         </li>
                     {% endfor %}
                 </ul>
