@@ -7,6 +7,7 @@ from projects.models import AnnualPool, Landesstelle, OverheadBudgetItemShare, P
 from staffing.models import Employment, EmploymentSalaries, StaffFundingAllocation, StaffMember
 from staffing.utils import get_salaries_by_month
 from django.conf import settings
+from django.contrib import messages
 from django.utils import timezone
 from django.db import transaction
 from django.db.models import Q
@@ -19,6 +20,12 @@ from django.views.decorators.http import require_POST
 from django.db.models import Sum
 
 from projects.utils import calculate_salary_for_allocation
+from sap_integration.cache import SAPCacheError
+from sap_integration.salary_sync import (
+    apply_salary_comparison,
+    build_salary_comparisons,
+    find_salary_comparison,
+)
 
 
 def _month_iter(start_date, end_date):
@@ -430,6 +437,68 @@ def warnings(request):
                 "link": f"/staffing/details/{staff_member.id}/",
             })
 
+    if settings.SAP_ENABLED:
+        try:
+            salary_result = build_salary_comparisons(settings.SAP_DATA_DIR)
+        except (OSError, ValueError, SAPCacheError) as error:
+            warnings_list.append({
+                "severity": "warning",
+                "title": "SAP-Gehaltsvergleich nicht möglich",
+                "detail": str(error),
+                "link": "/ist-stand/",
+            })
+        else:
+            for partner_name, month_count in salary_result.unmatched_partners.items():
+                warnings_list.append({
+                    "severity": "warning",
+                    "title": f"SAP-Geschäftspartner nicht zugeordnet: {partner_name}",
+                    "detail": (
+                        f"Für {month_count} Gehaltsmonat(e) wurde keine Person gefunden. "
+                        "Bitte den SAP-Geschäftspartner beim Mitarbeitenden hinterlegen."
+                    ),
+                    "link": "/admin/staffing/staffmember/",
+                })
+            for partner_name, month_count in salary_result.ambiguous_partners.items():
+                warnings_list.append({
+                    "severity": "warning",
+                    "title": f"SAP-Geschäftspartner mehrdeutig: {partner_name}",
+                    "detail": (
+                        f"Für {month_count} Gehaltsmonat(e) passen mehrere Personen. "
+                        "Bitte die SAP-Geschäftspartner-Zuordnung eindeutig konfigurieren."
+                    ),
+                    "link": "/admin/staffing/staffmember/",
+                })
+            for comparison in salary_result.comparisons:
+                if comparison.sap_amount == comparison.planned and not comparison.source_conflict:
+                    continue
+                if comparison.source_conflict:
+                    detail = (
+                        f"{comparison.month_label}: SAP-Ist "
+                        f"{_decimal_2(comparison.actual_amount)} EUR, SAP-Obligo "
+                        f"{_decimal_2(comparison.commitment_amount)} EUR, Planung "
+                        f"{_decimal_2(comparison.planned)} EUR."
+                    )
+                else:
+                    detail = (
+                        f"{comparison.month_label}: {comparison.source_label} "
+                        f"{_decimal_2(comparison.sap_amount)} EUR, Planung "
+                        f"{_decimal_2(comparison.planned)} EUR, Differenz "
+                        f"{_decimal_2(comparison.difference)} EUR."
+                    )
+                if comparison.blocking_reason:
+                    detail += f" {comparison.blocking_reason}"
+                warnings_list.append({
+                    "severity": "warning",
+                    "title": f"SAP-Gehaltsabweichung bei {comparison.staff_member}",
+                    "detail": detail,
+                    "link": f"/staffing/details/{comparison.staff_member.id}/",
+                    "sap_salary_update": (
+                        comparison.staff_member.id,
+                        comparison.month.year,
+                        comparison.month.month,
+                    ) if comparison.can_apply else None,
+                    "sap_salary_source": comparison.source,
+                })
     severity_order = {"danger": 0, "warning": 1, "info": 2, "success": 3}
     warnings_list.sort(key=lambda item: (severity_order.get(item["severity"], 99), item["title"]))
 
@@ -489,6 +558,47 @@ def merge_salary_overlap(request, current_id, following_id):
         for entry in new_salaries:
             EmploymentSalaries.objects.create(employment=employment, **entry)
 
+    return redirect("warnings")
+
+
+@login_required
+@require_POST
+def apply_sap_salary(request, staff_id, year, month):
+    if not settings.SAP_ENABLED:
+        messages.error(request, "Die SAP-Integration ist deaktiviert.")
+        return redirect("warnings")
+    if not 1 <= month <= 12:
+        messages.error(request, "Ungültiger Gehaltsmonat.")
+        return redirect("warnings")
+
+    try:
+        comparison = find_salary_comparison(
+            settings.SAP_DATA_DIR,
+            staff_id,
+            year,
+            month,
+        )
+        if comparison is None:
+            messages.error(
+                request,
+                "Der SAP-Istwert wurde nicht mehr gefunden. Bitte die Warnungen neu laden.",
+            )
+        elif comparison.source_conflict:
+            messages.error(request, comparison.blocking_reason)
+        elif comparison.sap_amount == comparison.planned:
+            messages.info(
+                request,
+                f"Planung und {comparison.source_label} stimmen bereits überein.",
+            )
+        else:
+            apply_salary_comparison(comparison)
+            messages.success(
+                request,
+                f"{comparison.source_label} für {comparison.staff_member}, "
+                f"{comparison.month_label}, wurde in die Planung übernommen.",
+            )
+    except (OSError, ValueError, SAPCacheError) as error:
+        messages.error(request, str(error))
     return redirect("warnings")
 
 

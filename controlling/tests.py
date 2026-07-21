@@ -1,11 +1,15 @@
+import json
+import tempfile
+from calendar import monthrange
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.urls import reverse
 
-from projects.models import Project, StaffBudgetItem, StaffBudgetItemEligibility
+from projects.models import Project, SAPFund, StaffBudgetItem, StaffBudgetItemEligibility
 from staffing.models import Employment, EmploymentSalaries, StaffFundingAllocation, StaffMember
 
 
@@ -150,3 +154,315 @@ class StaffStatusWarningTests(TestCase):
             response,
             f"Status-Inkonsistenz bei {staff_member}",
         )
+
+
+class SAPSalaryWarningTests(TestCase):
+    def setUp(self):
+        self.data_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.data_directory.cleanup)
+        self.data_dir = Path(self.data_directory.name)
+        user = get_user_model().objects.create_user(
+            username="sap-salary-user",
+            password="test-password",
+        )
+        self.client.force_login(user)
+        self.project = Project.objects.create(
+            acronym="SAP-SALARY",
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 12, 31),
+            budget_total=Decimal("12000.00"),
+            no_overhead=True,
+        )
+        self.fund = SAPFund.objects.create(
+            fund_number="SALARY-FUND",
+            project=self.project,
+        )
+        self.staff_member = StaffMember.objects.create(
+            first_name="Test",
+            last_name="Person",
+            status="active",
+        )
+        self.employment = Employment.objects.create(
+            staff_member=self.staff_member,
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 3, 31),
+            percentage=Decimal("100.00"),
+        )
+        EmploymentSalaries.objects.create(
+            employment=self.employment,
+            salary=Decimal("1000.00"),
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 3, 31),
+        )
+        _write_sap_salary_cache(
+            self.data_dir,
+            self.fund.fund_number,
+            business_partner="Person, Test",
+            amount="1100.00",
+        )
+
+    def test_warning_offers_sap_actual_salary_update(self):
+        with self.settings(SAP_ENABLED=True, SAP_DATA_DIR=self.data_dir):
+            response = self.client.get(reverse("warnings"))
+
+        self.assertContains(response, "SAP-Gehaltsabweichung bei Test Person")
+        self.assertContains(response, "SAP-Ist 1100.00 EUR")
+        self.assertContains(response, "Planung 1000.00 EUR")
+        self.assertContains(response, "Ist-Stand in Planung übernehmen")
+
+    def test_sap_update_changes_only_selected_month(self):
+        _write_sap_salary_cache(
+            self.data_dir,
+            self.fund.fund_number,
+            business_partner="Person, Test",
+            amount="1100.00",
+            month_name="Februar",
+        )
+        url = reverse(
+            "apply_sap_salary",
+            args=[self.staff_member.id, 2026, 2],
+        )
+        with self.settings(SAP_ENABLED=True, SAP_DATA_DIR=self.data_dir):
+            response = self.client.post(url, follow=True)
+
+        self.assertEqual(response.status_code, 200)
+        salaries = list(
+            self.employment.employmentsalaries_set.order_by("start_date").values_list(
+                "start_date",
+                "end_date",
+                "salary",
+            )
+        )
+        self.assertEqual(
+            salaries,
+            [
+                (date(2026, 1, 1), date(2026, 1, 31), Decimal("1000.00")),
+                (date(2026, 2, 1), date(2026, 2, 28), Decimal("1100.00")),
+                (date(2026, 3, 1), date(2026, 3, 31), Decimal("1000.00")),
+            ],
+        )
+        self.assertContains(response, "wurde in die Planung übernommen")
+        self.assertNotContains(response, "SAP-Gehaltsabweichung bei Test Person")
+
+    def test_consecutive_sap_updates_with_same_salary_are_merged(self):
+        january_url = reverse(
+            "apply_sap_salary",
+            args=[self.staff_member.id, 2026, 1],
+        )
+        with self.settings(SAP_ENABLED=True, SAP_DATA_DIR=self.data_dir):
+            self.client.post(january_url)
+
+        _write_sap_salary_cache(
+            self.data_dir,
+            self.fund.fund_number,
+            business_partner="Person, Test",
+            amount="1100.00",
+            month_name="Februar",
+        )
+        february_url = reverse(
+            "apply_sap_salary",
+            args=[self.staff_member.id, 2026, 2],
+        )
+        with self.settings(SAP_ENABLED=True, SAP_DATA_DIR=self.data_dir):
+            self.client.post(february_url)
+
+        salaries = list(
+            self.employment.employmentsalaries_set.order_by("start_date").values_list(
+                "start_date",
+                "end_date",
+                "salary",
+            )
+        )
+        self.assertEqual(
+            salaries,
+            [
+                (date(2026, 1, 1), date(2026, 2, 28), Decimal("1100.00")),
+                (date(2026, 3, 1), date(2026, 3, 31), Decimal("1000.00")),
+            ],
+        )
+
+    def test_sap_commitment_can_be_applied_to_planning(self):
+        _write_sap_salary_cache(
+            self.data_dir,
+            self.fund.fund_number,
+            business_partner="Person, Test",
+            amount="1200.00",
+            month_name="Februar",
+            transaction_type="commitment",
+        )
+
+        with self.settings(SAP_ENABLED=True, SAP_DATA_DIR=self.data_dir):
+            warning_response = self.client.get(reverse("warnings"))
+
+        self.assertContains(warning_response, "SAP-Obligo 1200.00 EUR")
+        self.assertContains(warning_response, "Obligo in Planung übernehmen")
+
+        url = reverse(
+            "apply_sap_salary",
+            args=[self.staff_member.id, 2026, 2],
+        )
+        with self.settings(SAP_ENABLED=True, SAP_DATA_DIR=self.data_dir):
+            update_response = self.client.post(url, follow=True)
+
+        february_salary = self.employment.employmentsalaries_set.get(
+            start_date=date(2026, 2, 1),
+            end_date=date(2026, 2, 28),
+        )
+        self.assertEqual(february_salary.salary, Decimal("1200.00"))
+        self.assertContains(update_response, "SAP-Obligo für Test Person")
+
+    def test_equal_actual_and_commitment_prefer_actual(self):
+        _write_sap_salary_cache(
+            self.data_dir,
+            self.fund.fund_number,
+            business_partner="Person, Test",
+            amount="1100.00",
+            additional_commitment_amount="1100.00",
+        )
+
+        with self.settings(SAP_ENABLED=True, SAP_DATA_DIR=self.data_dir):
+            response = self.client.get(reverse("warnings"))
+
+        self.assertContains(response, "SAP-Ist 1100.00 EUR")
+        self.assertContains(response, "Ist-Stand in Planung übernehmen")
+        self.assertNotContains(response, "unterschiedliche SAP-Ist-")
+
+    def test_different_actual_and_commitment_block_update(self):
+        _write_sap_salary_cache(
+            self.data_dir,
+            self.fund.fund_number,
+            business_partner="Person, Test",
+            amount="1100.00",
+            additional_commitment_amount="1200.00",
+        )
+
+        with self.settings(SAP_ENABLED=True, SAP_DATA_DIR=self.data_dir):
+            response = self.client.get(reverse("warnings"))
+
+        self.assertContains(response, "SAP-Ist 1100.00 EUR")
+        self.assertContains(response, "SAP-Obligo 1200.00 EUR")
+        self.assertContains(response, "unterschiedliche SAP-Ist- und SAP-Obligo-Werte")
+        self.assertNotContains(response, "in Planung übernehmen")
+
+    def test_explicit_sap_partner_name_enables_mapping(self):
+        self.staff_member.first_name = "Different"
+        self.staff_member.last_name = "Planning Name"
+        self.staff_member.sap_business_partner = "Person, Test"
+        self.staff_member.save(
+            update_fields=["first_name", "last_name", "sap_business_partner"]
+        )
+
+        with self.settings(SAP_ENABLED=True, SAP_DATA_DIR=self.data_dir):
+            response = self.client.get(reverse("warnings"))
+
+        self.assertContains(
+            response,
+            "SAP-Gehaltsabweichung bei Different Planning Name",
+        )
+        self.assertNotContains(response, "SAP-Geschäftspartner nicht zugeordnet")
+
+    def test_unmatched_sap_partner_has_mapping_warning_without_update(self):
+        self.staff_member.first_name = "Different"
+        self.staff_member.last_name = "Planning Name"
+        self.staff_member.save(update_fields=["first_name", "last_name"])
+
+        with self.settings(SAP_ENABLED=True, SAP_DATA_DIR=self.data_dir):
+            response = self.client.get(reverse("warnings"))
+
+        self.assertContains(response, "SAP-Geschäftspartner nicht zugeordnet")
+        self.assertNotContains(response, "Ist-Stand in Planung übernehmen")
+
+    def test_partial_employment_month_has_no_automatic_update(self):
+        self.employment.start_date = date(2026, 1, 15)
+        self.employment.save(update_fields=["start_date"])
+        self.employment.employmentsalaries_set.update(
+            start_date=date(2026, 1, 15)
+        )
+
+        with self.settings(SAP_ENABLED=True, SAP_DATA_DIR=self.data_dir):
+            response = self.client.get(reverse("warnings"))
+
+        self.assertContains(response, "Teilmonate können nicht automatisch")
+        self.assertNotContains(response, "Ist-Stand in Planung übernehmen")
+
+
+def _write_sap_salary_cache(
+    data_dir,
+    fund_number,
+    business_partner,
+    amount,
+    month_name="Januar",
+    transaction_type="actual",
+    additional_commitment_amount=None,
+):
+    processed_dir = Path(data_dir) / "processed"
+    processed_dir.mkdir(parents=True, exist_ok=True)
+    month_number = {
+        "Januar": 1,
+        "Februar": 2,
+        "März": 3,
+        "April": 4,
+        "Mai": 5,
+        "Juni": 6,
+        "Juli": 7,
+        "August": 8,
+        "September": 9,
+        "Oktober": 10,
+        "November": 11,
+        "Dezember": 12,
+    }[month_name]
+    commitment_position = (
+        f"Mittelbindung von 01.{month_number:02d}.2026 bis "
+        f"{monthrange(2026, month_number)[1]:02d}.{month_number:02d}.2026"
+    )
+    transactions = [
+        {
+            "type": transaction_type,
+            "business_partner": business_partner,
+            "position": (
+                f"Gehalt {month_name} 2026"
+                if transaction_type == "actual"
+                else commitment_position
+            ),
+            "amount": amount,
+            "booking_date": "2026-01-31",
+        }
+    ]
+    if additional_commitment_amount is not None:
+        transactions.append(
+            {
+                "type": "commitment",
+                "business_partner": business_partner,
+                "position": commitment_position,
+                "amount": additional_commitment_amount,
+                "booking_date": "2026-01-31",
+            }
+        )
+    actual_total = Decimal(amount) if transaction_type == "actual" else Decimal("0")
+    commitments_total = (
+        Decimal(amount) if transaction_type == "commitment" else Decimal("0")
+    )
+    if additional_commitment_amount is not None:
+        commitments_total += Decimal(additional_commitment_amount)
+    combined_total = actual_total + commitments_total
+    payload = {
+        "schema_version": 1,
+        "year": 2026,
+        "generated_at": "2026-07-21T10:00:00+00:00",
+        "funds": {
+            fund_number: {
+                "fund_number": fund_number,
+                "has_budget": True,
+                "budget": "12000.00",
+                "actual_total": str(actual_total),
+                "commitments_total": str(commitments_total),
+                "combined_total": str(combined_total),
+                "remaining": str(Decimal("12000.00") - combined_total),
+                "transactions": transactions,
+            }
+        },
+    }
+    (processed_dir / "2026.json").write_text(
+        json.dumps(payload),
+        encoding="utf-8",
+    )

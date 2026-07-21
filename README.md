@@ -303,6 +303,21 @@ its start date and effective end date. A cost-neutral extension is used as the
 effective end date when configured; progress is bounded between zero and one
 hundred percent.
 
+### Reconciling Planned and Actual Salaries
+
+The warnings page compares monthly planned salaries with cleaned, paid SAP
+transactions whose position follows `Gehalt <month> <year>`. Salary components
+for the same person and month are summed across all active SAP funds. Staff are
+matched automatically using normalized first and last names. If the SAP name
+differs, set the optional **SAP business partner** field on the staff member.
+
+Differences are never applied automatically. For an unambiguous full month, the
+warning offers **Apply actual to planning**. After confirmation, only that month
+is replaced by the SAP amount; the existing salary period is split so earlier
+and future planned values remain unchanged. Partial months, overlapping salary
+records, missing employments, and ambiguous person matches are reported without
+an apply button and must be resolved manually first.
+
 Setting `SAP_ENABLED=1` also installs a daily synchronization job. It runs at
 05:00 by default and can be changed through `SAP_SYNC_CRON`. The job invokes
 `sync_sap` without `--year`, so every run automatically uses the current fiscal

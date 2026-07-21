@@ -9,6 +9,16 @@ class StaffMember(models.Model):
     first_name = models.CharField(max_length=100)
     last_name = models.CharField(max_length=100)
     email = models.EmailField(blank=True, default='')
+    sap_business_partner = models.CharField(
+        "SAP-Geschäftspartner",
+        max_length=255,
+        blank=True,
+        default="",
+        help_text=(
+            "Optionaler Name aus dem SAP-Kontoauszug. Ohne Eintrag wird die "
+            "Zuordnung automatisch über Vor- und Nachname versucht."
+        ),
+    )
     is_leadership = models.BooleanField(default=False, help_text="Person hat Leitungsfunktion (z.B. Professor)")
     status = models.CharField(max_length=20, choices={
         'in_hire': 'Einstellung',

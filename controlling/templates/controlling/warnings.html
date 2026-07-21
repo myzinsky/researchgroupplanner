@@ -21,6 +21,12 @@
                                 <button type="submit" class="btn btn-sm btn-outline-primary">Zusammenführen</button>
                             </form>
                         {% endif %}
+                        {% if warning.sap_salary_update %}
+                            <form method="post" action="{% url 'apply_sap_salary' warning.sap_salary_update.0 warning.sap_salary_update.1 warning.sap_salary_update.2 %}" class="d-inline ms-2" onsubmit="return confirm('{% if warning.sap_salary_source == 'commitment' %}SAP-Obligo{% else %}SAP-Iststand{% endif %} für diesen Monat in die Planung übernehmen? Zukünftige Planzahlen bleiben erhalten.');">
+                                {% csrf_token %}
+                                <button type="submit" class="btn btn-sm btn-outline-primary">{% if warning.sap_salary_source == 'commitment' %}Obligo{% else %}Ist-Stand{% endif %} in Planung übernehmen</button>
+                            </form>
+                        {% endif %}
                     </div>
                     <span class="badge text-bg-{% if warning.severity == 'danger' %}danger{% elif warning.severity == 'warning' %}warning{% elif warning.severity == 'success' %}success{% else %}secondary{% endif %}">
                         {{ warning.severity|upper }}

@@ -20,7 +20,15 @@ from django.conf import settings
 from django.urls import include, path
 from django.contrib.staticfiles.urls import staticfiles_urlpatterns
 
-from controlling.views import annual_pools as controlling_annual_pools, main as controlling_main, warnings as controlling_warnings, statistics as controlling_statistics, send_test_email, merge_salary_overlap as controlling_merge_salary_overlap
+from controlling.views import (
+    annual_pools as controlling_annual_pools,
+    apply_sap_salary as controlling_apply_sap_salary,
+    main as controlling_main,
+    merge_salary_overlap as controlling_merge_salary_overlap,
+    send_test_email,
+    statistics as controlling_statistics,
+    warnings as controlling_warnings,
+)
 
 urlpatterns = [
     path(
@@ -38,6 +46,11 @@ urlpatterns = [
         "warnings/merge-salary-overlap/<int:current_id>/<int:following_id>/",
         controlling_merge_salary_overlap,
         name="merge_salary_overlap",
+    ),
+    path(
+        "warnings/apply-sap-salary/<int:staff_id>/<int:year>/<int:month>/",
+        controlling_apply_sap_salary,
+        name="apply_sap_salary",
     ),
     path("statistics/", controlling_statistics, name="statistics"),
     path("send-test-email/", send_test_email, name="send_test_email"),
