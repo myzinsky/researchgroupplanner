@@ -110,6 +110,23 @@ SAP_HEADLESS=1
 SAP_SYNC_CRON=0 5 * * *
 ```
 
+### Persistent Docker Data
+
+The `./data:/data` bind mount keeps both the SQLite database and SAP files on
+the Docker host. With `SAP_DATA_DIR=/data/sap`, raw exports, processed JSON
+caches, and download metadata are stored below `./data/sap/` and therefore
+survive container restarts, image updates, and container recreation. Do not
+point `SAP_DATA_DIR` at a path below `/app` in production unless that path has
+its own persistent mount.
+
+If an existing container still contains SAP files at the old default path,
+copy them to the host before recreating it:
+
+```shell
+mkdir -p data/sap
+docker compose cp web:/app/sap_data/. ./data/sap/
+```
+
 Protect the `.env` file locally as well:
 
 ```shell
