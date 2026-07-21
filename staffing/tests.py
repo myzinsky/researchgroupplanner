@@ -7,7 +7,65 @@ from django.test import TestCase
 from django.urls import reverse
 
 from projects.models import Project, StaffBudgetItem
-from staffing.models import Employment, StaffFundingAllocation, StaffMember
+from staffing.models import (
+    Employment,
+    EmploymentSalaries,
+    StaffFundingAllocation,
+    StaffMember,
+)
+from staffing.utils import get_salaries_by_month
+
+
+class SalaryAmountTypeTests(TestCase):
+    def setUp(self):
+        staff_member = StaffMember.objects.create(
+            first_name="Partial",
+            last_name="Month",
+        )
+        self.employment = Employment.objects.create(
+            staff_member=staff_member,
+            start_date=date(2026, 1, 15),
+            end_date=date(2026, 2, 15),
+            percentage=Decimal("100.00"),
+        )
+
+    def test_monthly_amount_is_prorated_at_both_period_boundaries(self):
+        EmploymentSalaries.objects.create(
+            employment=self.employment,
+            salary=Decimal("3100.00"),
+            start_date=date(2026, 1, 15),
+            end_date=date(2026, 2, 15),
+        )
+
+        monthly = get_salaries_by_month(self.employment)
+
+        self.assertEqual(monthly["2026-01"], Decimal("1700.00"))
+        self.assertEqual(monthly["2026-02"], Decimal("1660.71"))
+
+    def test_exact_partial_amount_is_not_prorated_again(self):
+        EmploymentSalaries.objects.create(
+            employment=self.employment,
+            salary=Decimal("1100.00"),
+            is_exact_amount=True,
+            start_date=date(2026, 1, 15),
+            end_date=date(2026, 1, 31),
+        )
+
+        monthly = get_salaries_by_month(self.employment)
+
+        self.assertEqual(monthly["2026-01"], Decimal("1100.00"))
+
+    def test_exact_amount_cannot_span_multiple_calendar_months(self):
+        salary = EmploymentSalaries(
+            employment=self.employment,
+            salary=Decimal("1100.00"),
+            is_exact_amount=True,
+            start_date=date(2026, 1, 15),
+            end_date=date(2026, 2, 15),
+        )
+
+        with self.assertRaisesMessage(ValidationError, "Kalendermonats"):
+            salary.full_clean()
 
 
 class UniversalStaffFundingTests(TestCase):

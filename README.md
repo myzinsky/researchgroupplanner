@@ -292,6 +292,12 @@ records are atomically replaced by non-overlapping periods. Salaries are added
 together for the overlap while the original salary is preserved before and
 after it.
 
+Salary records are monthly amounts by default. If **Exact amount?** is enabled,
+the entered value is treated as the complete amount for the selected date range
+and is not prorated a second time. Exact amounts must stay within one calendar
+month. During migration, existing records that cover only part of one calendar
+month are marked as exact; full-month and multi-month records remain monthly.
+
 Project lists link directly to each project's staffing timeline. Timeline labels
 use a more compact layout, and currency values use non-breaking spacing so that
 the euro sign stays attached to its amount.
@@ -378,12 +384,14 @@ for the same person and month are summed across all active SAP funds. Staff are
 matched automatically using normalized first and last names. If the SAP name
 differs, set the optional **SAP business partner** field on the staff member.
 
-Differences are never applied automatically. For an unambiguous full month, the
-warning offers **Apply actual to planning**. After confirmation, only that month
-is replaced by the SAP amount; the existing salary period is split so earlier
-and future planned values remain unchanged. Partial months, overlapping salary
-records, missing employments, and ambiguous person matches are reported without
-an apply button and must be resolved manually first.
+Differences are never applied automatically. For an unambiguous period, the
+warning offers **Apply actual to planning**. After confirmation, only that SAP
+period is replaced by the SAP amount; the existing salary period is split so
+earlier and future planned values remain unchanged. SAP commitments with a
+partial-month date range and actual salaries in a partial employment month are
+stored as exact amounts. Overlapping salary records, missing employments, source
+conflicts, and ambiguous person matches are reported without an apply button and
+must be resolved manually first.
 
 Setting `SAP_ENABLED=1` also installs a daily synchronization job. It runs at
 05:00 by default and can be changed through `SAP_SYNC_CRON`. The job invokes

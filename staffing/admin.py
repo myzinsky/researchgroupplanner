@@ -35,6 +35,7 @@ class EmploymentSalariesInline(admin.TabularInline):
     model = EmploymentSalaries
     extra = 0
     ordering = ("start_date", "end_date", "pk")
+    fields = ("salary", "is_exact_amount", "start_date", "end_date")
 
 
 class StaffFundingAllocationInline(admin.TabularInline):

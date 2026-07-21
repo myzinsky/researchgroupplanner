@@ -12,6 +12,7 @@ from projects.models import SAPFund
 from sap_integration.cache import available_years, fund_values, load_year
 from sap_integration.cleaning import clean_fund_values
 from staffing.models import EmploymentSalaries, StaffMember
+from staffing.utils import get_salary_amounts_by_month
 
 
 MONTHS = {
@@ -53,6 +54,8 @@ class SalaryComparison:
     actual_amount: Decimal | None = None
     commitment_amount: Decimal | None = None
     blocking_reason: str | None = None
+    sap_period_start: date | None = None
+    sap_period_end: date | None = None
 
     @property
     def difference(self):
@@ -120,6 +123,12 @@ def build_salary_comparisons(data_dir):
         else:
             sap_amount = commitment_amount
             source = "commitment"
+        source_periods = amounts.get(f"{source}_periods", set())
+        source_period = (
+            next(iter(source_periods))
+            if len(source_periods) == 1
+            else None
+        )
 
         comparisons.append(
             _comparison_for_staff(
@@ -130,6 +139,7 @@ def build_salary_comparisons(data_dir):
                 actual_amount=actual_amount,
                 commitment_amount=commitment_amount,
                 source_conflict=has_conflict,
+                sap_period=source_period,
             )
         )
 
@@ -179,27 +189,31 @@ def apply_salary_comparison(comparison):
             "Der Monat enthält mehrere Gehaltssätze und kann nicht automatisch übernommen werden."
         )
 
-    actual_start = max(month_start, employment.start_date)
-    actual_end = min(month_end, employment.end_date)
+    actual_start = max(
+        comparison.sap_period_start or month_start,
+        employment.start_date,
+    )
+    actual_end = min(
+        comparison.sap_period_end or month_end,
+        employment.end_date,
+    )
     new_records = []
 
     if salary_records:
         existing = salary_records[0]
         if existing.start_date < actual_start:
             new_records.append(
-                EmploymentSalaries(
-                    employment=employment,
-                    salary=existing.salary,
-                    start_date=existing.start_date,
-                    end_date=actual_start - timedelta(days=1),
+                _salary_fragment(
+                    existing,
+                    existing.start_date,
+                    actual_start - timedelta(days=1),
                 )
             )
         if existing.end_date > actual_end:
-            after_record = EmploymentSalaries(
-                employment=employment,
-                salary=existing.salary,
-                start_date=actual_end + timedelta(days=1),
-                end_date=existing.end_date,
+            after_record = _salary_fragment(
+                existing,
+                actual_end + timedelta(days=1),
+                existing.end_date,
             )
         else:
             after_record = None
@@ -211,6 +225,9 @@ def apply_salary_comparison(comparison):
         EmploymentSalaries(
             employment=employment,
             salary=comparison.sap_amount.quantize(CENT),
+            is_exact_amount=(
+                actual_start != month_start or actual_end != month_end
+            ),
             start_date=actual_start,
             end_date=actual_end,
         )
@@ -225,6 +242,25 @@ def apply_salary_comparison(comparison):
         _merge_adjacent_salary_records(employment)
 
 
+def _salary_fragment(existing, start_date, end_date):
+    amount = existing.salary
+    if existing.is_exact_amount:
+        original_days = (existing.end_date - existing.start_date).days + 1
+        fragment_days = (end_date - start_date).days + 1
+        amount = (
+            Decimal(existing.salary)
+            * Decimal(fragment_days)
+            / Decimal(original_days)
+        ).quantize(CENT)
+    return EmploymentSalaries(
+        employment=existing.employment,
+        salary=amount,
+        is_exact_amount=existing.is_exact_amount,
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+
 def _merge_adjacent_salary_records(employment):
     salary_records = list(
         employment.employmentsalaries_set.order_by("start_date", "end_date", "pk")
@@ -235,7 +271,12 @@ def _merge_adjacent_salary_records(employment):
     current = salary_records[0]
     for following in salary_records[1:]:
         is_adjacent = current.end_date + timedelta(days=1) == following.start_date
-        if is_adjacent and current.salary == following.salary:
+        if (
+            is_adjacent
+            and not current.is_exact_amount
+            and not following.is_exact_amount
+            and current.salary == following.salary
+        ):
             current.end_date = following.end_date
             current.save(update_fields=["end_date"])
             following.delete()
@@ -264,9 +305,10 @@ def _collect_salary_values(data_dir):
             for row in values["transactions"]:
                 if row.get("is_funding"):
                     continue
-                salary_month = _salary_month(row)
-                if salary_month is None:
+                salary_period = _salary_period(row)
+                if salary_period is None:
                     continue
+                salary_month, period_start, period_end = salary_period
                 partner_name = row.get("business_partner", "").strip()
                 partner_key = normalize_person_name(partner_name)
                 if not partner_key:
@@ -275,22 +317,28 @@ def _collect_salary_values(data_dir):
                 row_type = row["type"]
                 current = salary_values[key].get(row_type, Decimal("0"))
                 salary_values[key][row_type] = current + Decimal(row["amount"])
+                if period_start is not None and period_end is not None:
+                    salary_values[key].setdefault(
+                        f"{row_type}_periods",
+                        set(),
+                    ).add((period_start, period_end))
                 display_names.setdefault(partner_key, partner_name)
 
     return salary_values, display_names
 
 
-def _salary_month(row):
+def _salary_period(row):
     position = row.get("position", "")
     if row["type"] == "actual":
         match = SALARY_POSITION_PATTERN.search(position)
         if match is None:
             return None
-        return date(
+        month = date(
             int(match.group(2)),
             MONTHS[match.group(1).lower()],
             1,
         )
+        return month, None, None
 
     if row["type"] != "commitment":
         return None
@@ -299,10 +347,9 @@ def _salary_month(row):
         return None
     start = date(int(match.group(3)), int(match.group(2)), int(match.group(1)))
     end = date(int(match.group(6)), int(match.group(5)), int(match.group(4)))
-    expected_end = date(start.year, start.month, monthrange(start.year, start.month)[1])
-    if start.day != 1 or end != expected_end:
+    if (start.year, start.month) != (end.year, end.month):
         return None
-    return start
+    return start.replace(day=1), start, end
 
 
 def _staff_indexes(staff_members):
@@ -329,12 +376,16 @@ def _comparison_for_staff(
     actual_amount=None,
     commitment_amount=None,
     source_conflict=False,
+    sap_period=None,
 ):
     month_end = date(month.year, month.month, monthrange(month.year, month.month)[1])
+    comparison_start = sap_period[0] if sap_period else month
+    comparison_end = sap_period[1] if sap_period else month_end
     employments = [
         employment
         for employment in staff_member.employment_set.all()
-        if employment.start_date <= month_end and employment.end_date >= month
+        if employment.start_date <= comparison_end
+        and employment.end_date >= comparison_start
     ]
     if len(employments) != 1:
         reason = (
@@ -353,6 +404,8 @@ def _comparison_for_staff(
             actual_amount=_quantize_optional(actual_amount),
             commitment_amount=_quantize_optional(commitment_amount),
             blocking_reason=reason,
+            sap_period_start=comparison_start,
+            sap_period_end=comparison_end,
         )
 
     employment = employments[0]
@@ -361,13 +414,22 @@ def _comparison_for_staff(
         for salary in employment.employmentsalaries_set.all()
         if salary.start_date <= month_end and salary.end_date >= month
     ]
-    planned = sum((salary.salary for salary in salary_records), Decimal("0"))
+    active_start = max(comparison_start, employment.start_date)
+    active_end = min(comparison_end, employment.end_date)
+    month_key = month.strftime("%Y-%m")
+    planned = sum(
+        (
+            get_salary_amounts_by_month(
+                salary,
+                active_start,
+                active_end,
+            ).get(month_key, Decimal("0"))
+            for salary in salary_records
+        ),
+        Decimal("0"),
+    )
     blocking_reason = None
-    if employment.start_date > month or employment.end_date < month_end:
-        blocking_reason = (
-            "Teilmonate können nicht automatisch in die Planung übernommen werden."
-        )
-    elif len(salary_records) > 1:
+    if len(salary_records) > 1:
         blocking_reason = (
             "Der Monat enthält mehrere Gehaltssätze. Bitte zuerst die Überlappung auflösen."
         )
@@ -388,6 +450,8 @@ def _comparison_for_staff(
         actual_amount=_quantize_optional(actual_amount),
         commitment_amount=_quantize_optional(commitment_amount),
         blocking_reason=blocking_reason,
+        sap_period_start=comparison_start,
+        sap_period_end=comparison_end,
     )
 
 

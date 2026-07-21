@@ -436,7 +436,7 @@ class SAPSalaryWarningTests(TestCase):
         self.assertContains(response, "SAP-Geschäftspartner nicht zugeordnet")
         self.assertNotContains(response, "Alle SAP-Werte in Planung übernehmen")
 
-    def test_partial_employment_month_has_no_automatic_update(self):
+    def test_partial_employment_month_is_applied_as_exact_amount(self):
         self.employment.start_date = date(2026, 1, 15)
         self.employment.save(update_fields=["start_date"])
         self.employment.employmentsalaries_set.update(
@@ -446,8 +446,94 @@ class SAPSalaryWarningTests(TestCase):
         with self.settings(SAP_ENABLED=True, SAP_DATA_DIR=self.data_dir):
             response = self.client.get(reverse("warnings"))
 
-        self.assertContains(response, "Teilmonate können nicht automatisch")
-        self.assertNotContains(response, "Alle SAP-Werte in Planung übernehmen")
+        self.assertContains(response, "Planung 548.39 EUR")
+        self.assertContains(response, "Alle SAP-Werte in Planung übernehmen")
+
+        url = reverse("apply_sap_salary", args=[self.staff_member.id, 2026, 1])
+        with self.settings(SAP_ENABLED=True, SAP_DATA_DIR=self.data_dir):
+            update_response = self.client.post(url, follow=True)
+
+        salaries = list(
+            self.employment.employmentsalaries_set.order_by("start_date").values_list(
+                "start_date",
+                "end_date",
+                "salary",
+                "is_exact_amount",
+            )
+        )
+        self.assertEqual(
+            salaries,
+            [
+                (
+                    date(2026, 1, 15),
+                    date(2026, 1, 31),
+                    Decimal("1100.00"),
+                    True,
+                ),
+                (
+                    date(2026, 2, 1),
+                    date(2026, 3, 31),
+                    Decimal("1000.00"),
+                    False,
+                ),
+            ],
+        )
+        self.assertNotContains(
+            update_response,
+            "SAP-Gehaltsabweichungen bei Test Person",
+        )
+
+    def test_partial_commitment_period_is_applied_as_exact_amount(self):
+        _write_sap_salary_cache(
+            self.data_dir,
+            self.fund.fund_number,
+            business_partner="Person, Test",
+            amount="550.00",
+            transaction_type="commitment",
+            commitment_start_day=15,
+        )
+
+        with self.settings(SAP_ENABLED=True, SAP_DATA_DIR=self.data_dir):
+            warning_response = self.client.get(reverse("warnings"))
+
+        self.assertContains(warning_response, "Planung 548.39 EUR")
+        self.assertContains(warning_response, "SAP-Obligo 550.00 EUR")
+
+        url = reverse("apply_sap_salary", args=[self.staff_member.id, 2026, 1])
+        with self.settings(SAP_ENABLED=True, SAP_DATA_DIR=self.data_dir):
+            self.client.post(url)
+
+        salaries = list(
+            self.employment.employmentsalaries_set.order_by("start_date").values_list(
+                "start_date",
+                "end_date",
+                "salary",
+                "is_exact_amount",
+            )
+        )
+        self.assertEqual(
+            salaries,
+            [
+                (
+                    date(2026, 1, 1),
+                    date(2026, 1, 14),
+                    Decimal("1000.00"),
+                    False,
+                ),
+                (
+                    date(2026, 1, 15),
+                    date(2026, 1, 31),
+                    Decimal("550.00"),
+                    True,
+                ),
+                (
+                    date(2026, 2, 1),
+                    date(2026, 3, 31),
+                    Decimal("1000.00"),
+                    False,
+                ),
+            ],
+        )
 
     def test_multiple_months_are_grouped_and_applied_together(self):
         _write_sap_salary_cache(
@@ -559,6 +645,8 @@ def _write_sap_salary_cache(
     transaction_type="actual",
     additional_commitment_amount=None,
     additional_salary_rows=None,
+    commitment_start_day=1,
+    commitment_end_day=None,
 ):
     processed_dir = Path(data_dir) / "processed"
     processed_dir.mkdir(parents=True, exist_ok=True)
@@ -576,9 +664,10 @@ def _write_sap_salary_cache(
         "November": 11,
         "Dezember": 12,
     }[month_name]
+    commitment_end_day = commitment_end_day or monthrange(2026, month_number)[1]
     commitment_position = (
-        f"Mittelbindung von 01.{month_number:02d}.2026 bis "
-        f"{monthrange(2026, month_number)[1]:02d}.{month_number:02d}.2026"
+        f"Mittelbindung von {commitment_start_day:02d}.{month_number:02d}.2026 bis "
+        f"{commitment_end_day:02d}.{month_number:02d}.2026"
     )
     transactions = [
         {

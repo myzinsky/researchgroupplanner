@@ -45,8 +45,34 @@ class Employment(models.Model):
 class EmploymentSalaries(models.Model):
     employment = models.ForeignKey(Employment, on_delete=models.CASCADE, null=True, blank=True)
     salary = models.DecimalField(max_digits=10, decimal_places=2)
+    is_exact_amount = models.BooleanField(
+        "Exakter Betrag?",
+        default=False,
+        help_text=(
+            "Der Betrag gilt vollständig für den angegebenen Teilzeitraum und "
+            "wird nicht tagesanteilig berechnet."
+        ),
+    )
     start_date = models.DateField()
     end_date = models.DateField()
+
+    def clean(self):
+        super().clean()
+        if not self.start_date or not self.end_date:
+            return
+        if self.end_date < self.start_date:
+            raise ValidationError("Das Enddatum darf nicht vor dem Startdatum liegen.")
+        if self.is_exact_amount and (
+            self.start_date.year,
+            self.start_date.month,
+        ) != (
+            self.end_date.year,
+            self.end_date.month,
+        ):
+            raise ValidationError(
+                "Ein exakter Betrag muss vollständig innerhalb eines "
+                "Kalendermonats liegen."
+            )
 
     def __str__(self):
         return f"{self.employment.staff_member} ({self.start_date} - {self.end_date}, € {self.salary})"
