@@ -26,6 +26,7 @@ from sap_integration.salary_sync import (
     build_salary_comparisons,
     find_salary_comparison,
 )
+from controlling.backups import BackupError, perform_database_backup
 
 
 def _month_iter(start_date, end_date):
@@ -718,6 +719,10 @@ def statistics(request):
         "overhead_rows": overhead_rows,
         "overhead_totals": overhead_totals_list,
         "overhead_overall_total": overhead_overall_total,
+        "backup_enabled": settings.DB_BACKUP_ENABLED and request.user.is_staff,
+        "nextcloud_backup_enabled": bool(
+            settings.NEXTCLOUD_BACKUP_SHARE_URL.strip()
+        ),
     })
 
 
@@ -942,3 +947,33 @@ Das Research Group Planning System"""
             })
     
     return JsonResponse({'success': False, 'message': 'POST erforderlich'})
+
+
+@staff_member_required
+@require_POST
+def create_manual_backup(request):
+    if not settings.DB_BACKUP_ENABLED:
+        return JsonResponse({
+            "success": False,
+            "message": "Datenbank-Backups sind nicht aktiviert.",
+        }, status=400)
+
+    try:
+        result = perform_database_backup(kind="manual")
+    except (BackupError, OSError, ValueError) as error:
+        return JsonResponse({
+            "success": False,
+            "message": str(error),
+        }, status=500)
+
+    destination = (
+        "lokal und in Nextcloud"
+        if result.uploaded_to_nextcloud
+        else "lokal"
+    )
+    return JsonResponse({
+        "success": True,
+        "message": (
+            f"Backup {result.path.name} wurde erfolgreich {destination} gespeichert."
+        ),
+    })

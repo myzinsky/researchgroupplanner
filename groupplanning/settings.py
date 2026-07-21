@@ -205,6 +205,17 @@ EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
 EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '')
 DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'noreply@example.com')
 
+# SQLite database backups (optional)
+DB_BACKUP_ENABLED = env_bool('DB_BACKUP_ENABLED', False)
+DB_BACKUP_DIR = env_path('DB_BACKUP_DIR', BASE_DIR / 'backups')
+DB_BACKUP_CRON = os.getenv('DB_BACKUP_CRON', '0 2 * * *').strip()
+DB_BACKUP_KEEP_DAILY = env_int('DB_BACKUP_KEEP_DAILY', 7)
+DB_BACKUP_KEEP_MONTHLY = env_int('DB_BACKUP_KEEP_MONTHLY', 12)
+DB_BACKUP_KEEP_YEARLY = env_int('DB_BACKUP_KEEP_YEARLY', 1)
+NEXTCLOUD_BACKUP_SHARE_URL = os.getenv('NEXTCLOUD_BACKUP_SHARE_URL', '')
+NEXTCLOUD_BACKUP_SHARE_PASSWORD = os.getenv('NEXTCLOUD_BACKUP_SHARE_PASSWORD', '')
+NEXTCLOUD_BACKUP_TIMEOUT = env_int('NEXTCLOUD_BACKUP_TIMEOUT', 60)
+
 # Controlling Configuration
 
 # Whether overhead budgets are split between the own chair ("Lehrstuhl")
@@ -247,6 +258,17 @@ SAP_BACKEND = os.getenv(
 CRONJOBS = [
     ('0 8 * * *', 'django.core.management.call_command', ['send_notifications'], {}, '>> /tmp/cron_notifications.log 2>&1'),
 ]
+
+if DB_BACKUP_ENABLED:
+    CRONJOBS.append(
+        (
+            DB_BACKUP_CRON,
+            'django.core.management.call_command',
+            ['backup_database'],
+            {},
+            '>> /tmp/cron_backup.log 2>&1',
+        )
+    )
 
 if SAP_ENABLED:
     CRONJOBS.append(

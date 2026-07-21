@@ -108,6 +108,19 @@ SAP_DATA_DIR=/data/sap
 SAP_BROWSER=firefox
 SAP_HEADLESS=1
 SAP_SYNC_CRON=0 5 * * *
+
+# SQLite backups (optional)
+DB_BACKUP_ENABLED=0
+DB_BACKUP_DIR=/data/backups
+DB_BACKUP_CRON=0 2 * * *
+DB_BACKUP_KEEP_DAILY=7
+DB_BACKUP_KEEP_MONTHLY=12
+DB_BACKUP_KEEP_YEARLY=1
+
+# Password-protected public Nextcloud folder share (optional)
+NEXTCLOUD_BACKUP_SHARE_URL=https://cloud.example.com/s/SHARE_TOKEN
+NEXTCLOUD_BACKUP_SHARE_PASSWORD=strong-share-password
+NEXTCLOUD_BACKUP_TIMEOUT=60
 ```
 
 ### Persistent Docker Data
@@ -132,6 +145,54 @@ Protect the `.env` file locally as well:
 ```shell
 chmod 600 .env
 ```
+
+### SQLite Backups and Nextcloud
+
+When `DB_BACKUP_ENABLED=1`, the application creates a verified SQLite backup at
+the configured cron time. Backups are regular `.sqlite3` files and are written
+to `DB_BACKUP_DIR` through SQLite's online backup API, so the running web
+container does not need to be stopped. The backup is only published under its
+final name after `PRAGMA quick_check` succeeds.
+
+The default retention policy keeps:
+
+- every backup created within the last 7 days, including manual safety backups;
+- one additional backup for each of the previous 12 months;
+- one additional yearly backup.
+
+Only files created by this application and matching its strict backup filename
+format are considered for deletion. Other files in the local or remote folder
+are left untouched.
+
+To store the same plain SQLite files in Nextcloud, create a dedicated folder,
+share it through a password-protected public link, and select **Allow upload and
+editing**. Do not use **File drop**, because rotation requires permission to
+list and delete old backups. Put the public share URL and password in `.env` as
+shown above. The application supports the current and legacy public-share
+WebDAV endpoints automatically.
+
+Staff users can create an additional safety backup from the Statistics page.
+The same operation is available on the command line:
+
+```shell
+docker compose exec web python manage.py backup_database
+```
+
+Restart the container after enabling backups or changing `DB_BACKUP_CRON` so
+that the container's crontab is regenerated.
+
+To restore a backup, stop the web container, preserve the current database, and
+replace it with the selected plain SQLite file:
+
+```shell
+docker compose stop web
+cp data/db.sqlite3 data/db-before-restore.sqlite3
+cp data/backups/db-manual-YYYYMMDD-HHMMSS-ffffff.sqlite3 data/db.sqlite3
+docker compose up -d web
+```
+
+The container entrypoint applies any migrations that are newer than the restored
+database when the service starts again.
 
 Generate a production secret key for `DJANGO_SECRET_KEY` with:
 

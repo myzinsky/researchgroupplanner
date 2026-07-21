@@ -23,6 +23,7 @@ from django.contrib.staticfiles.urls import staticfiles_urlpatterns
 from controlling.views import (
     annual_pools as controlling_annual_pools,
     apply_sap_salary as controlling_apply_sap_salary,
+    create_manual_backup,
     main as controlling_main,
     merge_salary_overlap as controlling_merge_salary_overlap,
     send_test_email,
@@ -54,6 +55,7 @@ urlpatterns = [
     ),
     path("statistics/", controlling_statistics, name="statistics"),
     path("send-test-email/", send_test_email, name="send_test_email"),
+    path("create-backup/", create_manual_backup, name="create_manual_backup"),
     path("annual-pools/", controlling_annual_pools, name="annual_pools"),
     path("staffing/", include("staffing.urls")),
     path("projects/", include("projects.urls")),
