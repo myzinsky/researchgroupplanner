@@ -36,6 +36,14 @@ def env_float(name, default):
     return float(os.getenv(name, str(default)))
 
 
+def env_path(name, default):
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        raw_value = str(default)
+    expanded = os.path.expanduser(os.path.expandvars(str(raw_value)))
+    return Path(expanded)
+
+
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
@@ -115,7 +123,7 @@ WSGI_APPLICATION = 'groupplanning.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': Path(os.getenv('DJANGO_DB_NAME', BASE_DIR / 'db.sqlite3')),
+        'NAME': env_path('DJANGO_DB_NAME', BASE_DIR / 'db.sqlite3'),
     }
 }
 
@@ -222,7 +230,7 @@ SAP_URL = os.getenv('SAP_URL', '')
 SAP_USER = os.getenv('SAP_USER', '')
 SAP_PASSWORD = os.getenv('SAP_PASSWORD', '')
 SAP_FINANZSTELLE = os.getenv('SAP_FINANZSTELLE', '')
-SAP_DATA_DIR = Path(os.getenv('SAP_DATA_DIR', BASE_DIR / 'sap_data'))
+SAP_DATA_DIR = env_path('SAP_DATA_DIR', BASE_DIR / 'sap_data')
 SAP_BROWSER = os.getenv('SAP_BROWSER', 'firefox')
 SAP_BROWSER_BINARY = os.getenv('SAP_BROWSER_BINARY', '')
 SAP_HEADLESS = env_bool('SAP_HEADLESS', True)

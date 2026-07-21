@@ -246,6 +246,8 @@ The command downloads budget, actual, and commitment reports to
 `$SAP_DATA_DIR/last_download.json`. The Docker image includes Firefox ESR and
 Geckodriver. For local development, Chrome can be selected with
 `SAP_BROWSER=chrome`; Selenium will manage the appropriate driver on first use.
+If Selenium warns about a Firefox/Geckodriver version mismatch in Docker,
+rebuild and redeploy the image so the bundled driver version is updated.
 
 Process existing downloads without accessing SAP again:
 
