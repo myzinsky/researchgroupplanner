@@ -22,11 +22,21 @@
                 <a class="btn btn-outline-primary"
                    href="{% url 'sap_integration:fund_detail' year fund.id %}?clean=1">Bereinigen</a>
             {% endif %}
-            <div class="btn-group" role="group" aria-label="Geschäftsjahr auswählen">
-                {% for available_year in years %}
-                    <a class="btn {% if available_year == year %}btn-primary{% else %}btn-outline-primary{% endif %}"
-                       href="{% url 'sap_integration:fund_detail' available_year fund.id %}{% if is_clean %}?clean=1{% endif %}">{{ available_year }}</a>
-                {% endfor %}
+            <div class="dropdown">
+                <button class="btn btn-primary dropdown-toggle" type="button"
+                        id="statement-year-dropdown" data-bs-toggle="dropdown"
+                        aria-expanded="false">
+                    Geschäftsjahr {{ year }}
+                </button>
+                <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="statement-year-dropdown">
+                    {% for available_year in years %}
+                        <li>
+                            <a class="dropdown-item{% if available_year == year %} active{% endif %}"
+                               {% if available_year == year %}aria-current="page"{% endif %}
+                               href="{% url 'sap_integration:fund_detail' available_year fund.id %}{% if is_clean %}?clean=1{% endif %}">{{ available_year }}</a>
+                        </li>
+                    {% endfor %}
+                </ul>
             </div>
         </div>
     </div>

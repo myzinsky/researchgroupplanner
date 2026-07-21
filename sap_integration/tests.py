@@ -404,6 +404,8 @@ class SAPViewsTests(TestCase):
         self.assertContains(response, "Obligo")
         self.assertContains(response, "Gesamtbudget")
         self.assertContains(response, "Auslastung")
+        self.assertContains(response, 'id="overview-year-dropdown"', html=False)
+        self.assertContains(response, "Geschäftsjahr 2026")
         self.assertNotContains(response, "NO-DATA")
 
         lifetime = response.context["rows"][0]["lifetime"]
@@ -485,7 +487,27 @@ class SAPViewsTests(TestCase):
         self.assertContains(response, "Kontoauszug WEB-FUND")
         self.assertContains(response, "Geschäftspartner")
         self.assertContains(response, "Bereinigen")
+        self.assertContains(response, 'id="statement-year-dropdown"', html=False)
+        self.assertContains(response, "Geschäftsjahr 2026")
         self.assertContains(response, 'class="table-secondary"', html=False)
+
+    def test_clean_year_dropdown_preserves_clean_mode(self):
+        _write_processed_cache(
+            self.data_dir,
+            self.fund.fund_number,
+            year=2025,
+        )
+        with self.settings(SAP_ENABLED=True, SAP_DATA_DIR=self.data_dir):
+            response = self.client.get(
+                reverse("sap_integration:fund_detail", args=[2026, self.fund.id]),
+                {"clean": "1"},
+            )
+
+        target = reverse(
+            "sap_integration:fund_detail",
+            args=[2025, self.fund.id],
+        )
+        self.assertContains(response, f'href="{target}?clean=1"', html=False)
 
     def test_clean_fund_detail_uses_cleaned_transactions(self):
         _write_processed_cache(

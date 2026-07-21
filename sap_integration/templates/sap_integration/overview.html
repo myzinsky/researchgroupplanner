@@ -6,14 +6,26 @@
 
 {% block content %}
     <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-3">
-        <div class="btn-group" role="group" aria-label="Geschäftsjahr auswählen">
-            {% for year in years %}
-                <a class="btn {% if year == selected_year %}btn-primary{% else %}btn-outline-primary{% endif %}"
-                   href="{% url 'sap_integration:overview_year' year %}">{{ year }}</a>
-            {% empty %}
-                <span class="text-muted">Noch keine Geschäftsjahre aufbereitet</span>
-            {% endfor %}
-        </div>
+        {% if selected_year %}
+            <div class="dropdown">
+                <button class="btn btn-primary dropdown-toggle" type="button"
+                        id="overview-year-dropdown" data-bs-toggle="dropdown"
+                        aria-expanded="false">
+                    Geschäftsjahr {{ selected_year }}
+                </button>
+                <ul class="dropdown-menu" aria-labelledby="overview-year-dropdown">
+                    {% for year in years %}
+                        <li>
+                            <a class="dropdown-item{% if year == selected_year %} active{% endif %}"
+                               {% if year == selected_year %}aria-current="page"{% endif %}
+                               href="{% url 'sap_integration:overview_year' year %}">{{ year }}</a>
+                        </li>
+                    {% endfor %}
+                </ul>
+            </div>
+        {% else %}
+            <span class="text-muted">Noch keine Geschäftsjahre aufbereitet</span>
+        {% endif %}
         {% if generated_at %}
             <small class="text-muted">Stand: {{ generated_at|date:"d.m.Y H:i" }} Uhr</small>
         {% endif %}
