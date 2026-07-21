@@ -33,6 +33,10 @@ def _month_key(date_obj):
     return date_obj.strftime("%Y-%m")
 
 
+def _decimal_2(value):
+    return format(Decimal(value), ".2f")
+
+
 def _project_overhead_available_sum(project):
     total = Decimal("0.00")
     for item in project.overheadbudgetitem_set.all():
@@ -94,8 +98,9 @@ def warnings(request):
                 "severity": "danger",
                 "title": f"Budgetüberziehung Personalbudget: {budget_item.title}",
                 "detail": (
-                    f"Geplante Personalkosten {projected_sum} EUR überschreiten Budget {budget_item.amount} EUR "
-                    f"(Differenz: {difference} EUR; Projekt {budget_item.project.acronym})."
+                    f"Geplante Personalkosten {_decimal_2(projected_sum)} EUR überschreiten Budget "
+                    f"{_decimal_2(budget_item.amount)} EUR (Differenz: {_decimal_2(difference)} EUR; "
+                    f"Projekt {budget_item.project.acronym})."
                 ),
                 "link": f"/projects/details/{budget_item.project.acronym}/",
             })
@@ -113,8 +118,8 @@ def warnings(request):
                         "severity": "warning",
                         "title": f"Overhead-Verteilung unvollständig: {project.acronym}",
                         "detail": (
-                            f"Der Overhead-Posten ({overhead_item.amount} EUR) ist aktuell mit "
-                            f"{distributed_percentage}% verteilt. Erwartet sind 100%."
+                            f"Der Overhead-Posten ({_decimal_2(overhead_item.amount)} EUR) ist aktuell mit "
+                            f"{_decimal_2(distributed_percentage)}% verteilt. Erwartet sind 100%."
                         ),
                         "link": f"/projects/details/{project.acronym}/",
                     })
@@ -130,8 +135,8 @@ def warnings(request):
                 "severity": "warning",
                 "title": f"Budgetsumme ungleich Fördersumme: {project.acronym}",
                 "detail": (
-                    f"Einzelsummen ergeben {planned_total} EUR, Fördersumme ist {project.budget_total} EUR "
-                    f"(Differenz: {diff} EUR)."
+                    f"Einzelsummen ergeben {_decimal_2(planned_total)} EUR, Fördersumme ist "
+                    f"{_decimal_2(project.budget_total)} EUR (Differenz: {_decimal_2(diff)} EUR)."
                 ),
                 "link": f"/projects/details/{project.acronym}/",
             })
@@ -160,7 +165,8 @@ def warnings(request):
                 "severity": "danger",
                 "title": f"Budgetüberziehung Projekt: {project.acronym}",
                 "detail": (
-                    f"Allokiert/gebunden {total_allocated} EUR bei Gesamtbudget {project.budget_total} EUR."
+                    f"Allokiert/gebunden {_decimal_2(total_allocated)} EUR bei Gesamtbudget "
+                    f"{_decimal_2(project.budget_total)} EUR."
                 ),
                 "link": f"/projects/details/{project.acronym}/",
             })
@@ -170,8 +176,9 @@ def warnings(request):
                 "severity": "success",
                 "title": f"Restbudget vorhanden: {project.acronym}",
                 "detail": (
-                    f"Aktuell sind noch {remaining} EUR Restbudget verfügbar "
-                    f"(allokiert/gebunden: {total_allocated} EUR von {project.budget_total} EUR)."
+                    f"Aktuell sind noch {_decimal_2(remaining)} EUR Restbudget verfügbar "
+                    f"(allokiert/gebunden: {_decimal_2(total_allocated)} EUR von "
+                    f"{_decimal_2(project.budget_total)} EUR)."
                 ),
                 "link": f"/projects/details/{project.acronym}/",
             })
@@ -256,8 +263,9 @@ def warnings(request):
                     "severity": "warning",
                     "title": f"Überlappende Gehaltssätze: {employment.staff_member}",
                     "detail": (
-                        f"Gehalt {current.start_date} - {current.end_date} ({current.salary} €) überlappt mit "
-                        f"{following.start_date} - {following.end_date} ({following.salary} €) "
+                        f"Gehalt {current.start_date} - {current.end_date} ({_decimal_2(current.salary)} €) "
+                        f"überlappt mit {following.start_date} - {following.end_date} "
+                        f"({_decimal_2(following.salary)} €) "
                         f"im Zeitraum {overlap_start} - {overlap_end}."
                     ),
                     "link": f"/staffing/details/{employment.staff_member.id}/",
@@ -279,7 +287,8 @@ def warnings(request):
                 "severity": "warning",
                 "title": f"Keine Zuordnung für {employment.staff_member}",
                 "detail": (
-                    f"Die Anstellung ({employment.start_date} - {employment.end_date}, {employment.percentage}%) "
+                    f"Die Anstellung ({employment.start_date} - {employment.end_date}, "
+                    f"{_decimal_2(employment.percentage)}%) "
                     "hat keine Finanzierungszuordnungen."
                 ),
                 "link": f"/staffing/details/{employment.staff_member.id}/",
@@ -304,27 +313,35 @@ def warnings(request):
                 over_months.append((_month_key(month), total))
 
         if under_months:
-            sample = ", ".join(f"{m} ({p}%)" for m, p in under_months[:4])
+            sample = ", ".join(
+                f"{month} ({_decimal_2(percentage)}%)"
+                for month, percentage in under_months[:4]
+            )
             if len(under_months) > 4:
                 sample += ", ..."
             warnings_list.append({
                 "severity": "warning",
                 "title": f"Unterallokation bei {employment.staff_member}",
                 "detail": (
-                    f"{len(under_months)} Monat(e) liegen unter dem Vertragsanteil von {employment.percentage}%: {sample}"
+                    f"{len(under_months)} Monat(e) liegen unter dem Vertragsanteil von "
+                    f"{_decimal_2(employment.percentage)}%: {sample}"
                 ),
                 "link": f"/staffing/details/{employment.staff_member.id}/",
             })
 
         if over_months:
-            sample = ", ".join(f"{m} ({p}%)" for m, p in over_months[:4])
+            sample = ", ".join(
+                f"{month} ({_decimal_2(percentage)}%)"
+                for month, percentage in over_months[:4]
+            )
             if len(over_months) > 4:
                 sample += ", ..."
             warnings_list.append({
                 "severity": "danger",
                 "title": f"Überallokation bei {employment.staff_member}",
                 "detail": (
-                    f"{len(over_months)} Monat(e) liegen über dem Vertragsanteil von {employment.percentage}%: {sample}"
+                    f"{len(over_months)} Monat(e) liegen über dem Vertragsanteil von "
+                    f"{_decimal_2(employment.percentage)}%: {sample}"
                 ),
                 "link": f"/staffing/details/{employment.staff_member.id}/",
             })
@@ -337,7 +354,8 @@ def warnings(request):
                     "severity": "warning",
                     "title": f"Zuordnung außerhalb der Vertragslaufzeit ({employment.staff_member})",
                     "detail": (
-                        f"Zuordnung {allocation.percentage}% läuft von {allocation.start_date} bis {alloc_end}, "
+                        f"Zuordnung {_decimal_2(allocation.percentage)}% läuft von "
+                        f"{allocation.start_date} bis {alloc_end}, "
                         f"Vertrag aber nur von {employment.start_date} bis {employment.end_date}."
                     ),
                     "link": f"/staffing/details/{employment.staff_member.id}/",
@@ -351,7 +369,8 @@ def warnings(request):
                         "severity": "warning",
                         "title": f"Zuordnung außerhalb Projektlaufzeit ({project.acronym})",
                         "detail": (
-                            f"Zuordnung {allocation.percentage}% ({allocation.start_date} - {alloc_end}) "
+                            f"Zuordnung {_decimal_2(allocation.percentage)}% "
+                            f"({allocation.start_date} - {alloc_end}) "
                             f"liegt außerhalb Projektzeitraum {project.start_date} - {project_end}."
                         ),
                         "link": f"/projects/details/{project.acronym}/",
@@ -383,7 +402,8 @@ def warnings(request):
                         "severity": "warning",
                         "title": f"Zuordnung außerhalb Annual-Pool-Jahr ({pool_budget.annual_pool.title})",
                         "detail": (
-                            f"Zuordnung {allocation.percentage}% ({allocation.start_date} - {alloc_end}) "
+                            f"Zuordnung {_decimal_2(allocation.percentage)}% "
+                            f"({allocation.start_date} - {alloc_end}) "
                             f"liegt nicht vollständig im Budgetjahr {pool_budget.year}."
                         ),
                         "link": "/admin/projects/annualpool/",
@@ -710,7 +730,8 @@ def main(request):
                 continue
 
             allocation_lines.append(
-                f"- {source}: {allocation.percentage}% ({allocation.start_date} - {alloc_end})"
+                f"- {source}: {_decimal_2(allocation.percentage)}% "
+                f"({allocation.start_date} - {alloc_end})"
             )
 
         allocation_html = "<br>".join(allocation_lines) if allocation_lines else "Keine Zuordnungen"
@@ -719,10 +740,11 @@ def main(request):
             'staff': staff_name,
             'staff_id': employment.staff_member.id,
             'percentage': employment.percentage,
-            'label': f"Vertrag {employment.percentage}%",
+            'label': f"Vertrag {_decimal_2(employment.percentage)}%",
             'tooltip_html': (
                 f"<strong>{staff_name}</strong><br>"
-                f"Vertrag: {employment.get_category()} ({employment.percentage}%)<br>"
+                f"Vertrag: {employment.get_category()} "
+                f"({_decimal_2(employment.percentage)}%)<br>"
                 f"{employment.start_date} - {employment.end_date}<br><br>"
                 f"<strong>Zuordnungen:</strong><br>{allocation_html}"
             ),
