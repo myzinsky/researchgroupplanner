@@ -383,6 +383,10 @@ transactions whose position follows `Gehalt <month> <year>`. Salary components
 for the same person and month are summed across all active SAP funds. Staff are
 matched automatically using normalized first and last names. If the SAP name
 differs, set the optional **SAP business partner** field on the staff member.
+If a person changes employment within a month, the source SAP fund is matched
+against existing project, annual-pool, or universal funding allocations to
+select the employment. The update remains blocked when this does not produce
+exactly one match.
 
 Differences are never applied automatically. For an unambiguous period, the
 warning offers **Apply actual to planning**. After confirmation, only that SAP

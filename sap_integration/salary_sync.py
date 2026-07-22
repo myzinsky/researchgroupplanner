@@ -89,7 +89,9 @@ def build_salary_comparisons(data_dir):
     salary_values, display_names = _collect_salary_values(data_dir)
     staff_members = list(
         StaffMember.objects.prefetch_related(
-            "employment_set__employmentsalaries_set"
+            "employment_set__employmentsalaries_set",
+            "employment_set__stafffundingallocation_set__budget_item",
+            "employment_set__stafffundingallocation_set__annual_pool_budget",
         )
     )
     explicit_index, automatic_index = _staff_indexes(staff_members)
@@ -124,6 +126,7 @@ def build_salary_comparisons(data_dir):
             sap_amount = commitment_amount
             source = "commitment"
         source_periods = amounts.get(f"{source}_periods", set())
+        source_fund_owners = amounts.get(f"{source}_fund_owners", set())
         source_period = (
             next(iter(source_periods))
             if len(source_periods) == 1
@@ -140,6 +143,7 @@ def build_salary_comparisons(data_dir):
                 commitment_amount=commitment_amount,
                 source_conflict=has_conflict,
                 sap_period=source_period,
+                sap_fund_owners=source_fund_owners,
             )
         )
 
@@ -317,6 +321,10 @@ def _collect_salary_values(data_dir):
                 row_type = row["type"]
                 current = salary_values[key].get(row_type, Decimal("0"))
                 salary_values[key][row_type] = current + Decimal(row["amount"])
+                salary_values[key].setdefault(
+                    f"{row_type}_fund_owners",
+                    set(),
+                ).add(_fund_owner_key(fund))
                 if period_start is not None and period_end is not None:
                     salary_values[key].setdefault(
                         f"{row_type}_periods",
@@ -368,6 +376,39 @@ def _staff_indexes(staff_members):
     return explicit, automatic
 
 
+def _fund_owner_key(fund):
+    if fund.project_id:
+        return "project", fund.project_id
+    if fund.annual_pool_id:
+        return "annual_pool", fund.annual_pool_id
+    return "universal", None
+
+
+def _allocation_owner_key(allocation):
+    if allocation.budget_item_id:
+        return "project", allocation.budget_item.project_id
+    if allocation.annual_pool_budget_id:
+        return "annual_pool", allocation.annual_pool_budget.annual_pool_id
+    if allocation.is_universal:
+        return "universal", None
+    return None
+
+
+def _employment_matches_fund_owners(
+    employment,
+    fund_owners,
+    comparison_start,
+    comparison_end,
+):
+    matching_allocation_owners = {
+        _allocation_owner_key(allocation)
+        for allocation in employment.stafffundingallocation_set.all()
+        if allocation.start_date <= comparison_end
+        and (allocation.end_date or employment.end_date) >= comparison_start
+    }
+    return fund_owners.issubset(matching_allocation_owners)
+
+
 def _comparison_for_staff(
     staff_member,
     month,
@@ -377,6 +418,7 @@ def _comparison_for_staff(
     commitment_amount=None,
     source_conflict=False,
     sap_period=None,
+    sap_fund_owners=None,
 ):
     month_end = date(month.year, month.month, monthrange(month.year, month.month)[1])
     comparison_start = sap_period[0] if sap_period else month
@@ -387,6 +429,19 @@ def _comparison_for_staff(
         if employment.start_date <= comparison_end
         and employment.end_date >= comparison_start
     ]
+    if len(employments) > 1 and sap_fund_owners:
+        fund_employments = [
+            employment
+            for employment in employments
+            if _employment_matches_fund_owners(
+                employment,
+                sap_fund_owners,
+                comparison_start,
+                comparison_end,
+            )
+        ]
+        if len(fund_employments) == 1:
+            employments = fund_employments
     if len(employments) != 1:
         reason = (
             "Für diesen Monat wurde keine passende Anstellung gefunden."

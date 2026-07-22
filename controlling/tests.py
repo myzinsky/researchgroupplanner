@@ -12,7 +12,10 @@ from django.urls import reverse
 
 from projects.models import Project, SAPFund, StaffBudgetItem, StaffBudgetItemEligibility
 from staffing.models import Employment, EmploymentSalaries, StaffFundingAllocation, StaffMember
-from sap_integration.salary_sync import apply_salary_comparison as apply_salary_value
+from sap_integration.salary_sync import (
+    apply_salary_comparison as apply_salary_value,
+    build_salary_comparisons,
+)
 
 
 class BudgetWarningTests(TestCase):
@@ -533,6 +536,118 @@ class SAPSalaryWarningTests(TestCase):
                     False,
                 ),
             ],
+        )
+
+    def test_fund_allocation_resolves_employment_change_within_month(self):
+        self.employment.end_date = date(2026, 2, 15)
+        self.employment.save(update_fields=["end_date"])
+        self.employment.employmentsalaries_set.all().delete()
+        EmploymentSalaries.objects.create(
+            employment=self.employment,
+            salary=Decimal("550.00"),
+            is_exact_amount=True,
+            start_date=date(2026, 2, 1),
+            end_date=date(2026, 2, 15),
+        )
+        budget_item = StaffBudgetItem.objects.create(
+            project=self.project,
+            title="Old employment",
+            amount=Decimal("1000.00"),
+        )
+        StaffFundingAllocation.objects.create(
+            employment=self.employment,
+            budget_item=budget_item,
+            percentage=Decimal("100.00"),
+            start_date=date(2026, 2, 1),
+            end_date=date(2026, 2, 15),
+        )
+        new_employment = Employment.objects.create(
+            staff_member=self.staff_member,
+            start_date=date(2026, 2, 16),
+            end_date=date(2026, 3, 31),
+            percentage=Decimal("50.00"),
+        )
+        EmploymentSalaries.objects.create(
+            employment=new_employment,
+            salary=Decimal("2000.00"),
+            start_date=date(2026, 2, 16),
+            end_date=date(2026, 3, 31),
+        )
+        StaffFundingAllocation.objects.create(
+            employment=new_employment,
+            is_universal=True,
+            percentage=Decimal("50.00"),
+            start_date=date(2026, 2, 16),
+            end_date=date(2026, 3, 31),
+        )
+        _write_sap_salary_cache(
+            self.data_dir,
+            self.fund.fund_number,
+            business_partner="Person, Test",
+            amount="550.00",
+            month_name="Februar",
+        )
+
+        comparison = build_salary_comparisons(self.data_dir).comparisons[0]
+
+        self.assertEqual(comparison.employment, self.employment)
+        self.assertEqual(comparison.planned, Decimal("550.00"))
+        self.assertIsNone(comparison.blocking_reason)
+        with self.settings(SAP_ENABLED=True, SAP_DATA_DIR=self.data_dir):
+            response = self.client.get(reverse("warnings"))
+        self.assertNotContains(
+            response,
+            "SAP-Gehaltsabweichungen bei Test Person",
+        )
+
+    def test_fund_allocation_keeps_genuinely_ambiguous_employments_blocked(self):
+        self.employment.end_date = date(2026, 2, 15)
+        self.employment.save(update_fields=["end_date"])
+        budget_item = StaffBudgetItem.objects.create(
+            project=self.project,
+            title="Shared project",
+            amount=Decimal("5000.00"),
+        )
+        StaffFundingAllocation.objects.create(
+            employment=self.employment,
+            budget_item=budget_item,
+            percentage=Decimal("100.00"),
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 2, 15),
+        )
+        new_employment = Employment.objects.create(
+            staff_member=self.staff_member,
+            start_date=date(2026, 2, 16),
+            end_date=date(2026, 3, 31),
+            percentage=Decimal("100.00"),
+        )
+        EmploymentSalaries.objects.create(
+            employment=new_employment,
+            salary=Decimal("1200.00"),
+            start_date=date(2026, 2, 16),
+            end_date=date(2026, 3, 31),
+        )
+        StaffFundingAllocation.objects.create(
+            employment=new_employment,
+            budget_item=budget_item,
+            percentage=Decimal("100.00"),
+            start_date=date(2026, 2, 16),
+            end_date=date(2026, 3, 31),
+        )
+        _write_sap_salary_cache(
+            self.data_dir,
+            self.fund.fund_number,
+            business_partner="Person, Test",
+            amount="1100.00",
+            month_name="Februar",
+        )
+
+        comparison = build_salary_comparisons(self.data_dir).comparisons[0]
+
+        self.assertIsNone(comparison.employment)
+        self.assertEqual(
+            comparison.blocking_reason,
+            "Für diesen Monat wurden mehrere passende Anstellungen gefunden.",
         )
 
     def test_multiple_months_are_grouped_and_applied_together(self):
