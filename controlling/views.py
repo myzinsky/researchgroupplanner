@@ -4,7 +4,15 @@ from .models import IgnoredWarning
 from .utils import render
 from dateutil.relativedelta import relativedelta
 
-from projects.models import AnnualPool, Landesstelle, OverheadBudgetItemShare, Project, SAPFund, StaffBudgetItem
+from projects.models import (
+    AnnualPool,
+    Landesstelle,
+    OverheadBudgetItemShare,
+    Project,
+    ProjectDeliverable,
+    SAPFund,
+    StaffBudgetItem,
+)
 from staffing.models import Employment, EmploymentSalaries, StaffFundingAllocation, StaffMember
 from staffing.utils import (
     get_salaries_by_month,
@@ -1225,6 +1233,11 @@ def main(request):
         else:
             staff_timeline_entries_employees.append(entry)
 
+    deliverables = [
+        {"project_id": d.project_id, "title": d.title, "deadline": d.deadline, "is_lead": d.is_lead}
+        for d in ProjectDeliverable.objects.filter(project__in=projects)
+    ]
+
     # Load project milestones
     milestones = []
     for project in projects:
@@ -1247,6 +1260,7 @@ def main(request):
         "staff_timeline_entries_hiwis": staff_timeline_entries_hiwis,
         "staff_timeline_entries_employees": staff_timeline_entries_employees,
         "project_milestones": milestones,
+        "project_deliverables": deliverables,
     })
 
 

@@ -1,3 +1,4 @@
+from datetime import timedelta
 from decimal import Decimal
 from controlling.utils import render
 from django.db.models import Q
@@ -227,6 +228,11 @@ def details(request: HttpRequest, acronym: str):
         "remain_sum": remain_sum,
         "rebooked_allocated": rebooked_allocated,
         "reporting": reporting,
+        "deliverables": list(project.deliverables.all()),
+        "links": list(project.links.order_by("title")),
+        "contacts": list(project.contacts.order_by("function", "name")),
+        "today": timezone.now().date(),
+        "soon": timezone.now().date() + timedelta(days=30),
         "rebooked_remain": rebooked_remain,
     }
 

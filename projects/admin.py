@@ -11,6 +11,9 @@ from .models import (
     OverheadBudgetItem,
     OverheadBudgetItemShare,
     Project,
+    ProjectContact,
+    ProjectDeliverable,
+    ProjectLink,
     ProjectMilestone,
     ReportingPeriod,
     SAPFund,
@@ -53,6 +56,24 @@ class ProjectSAPFundInlineAdmin(admin.TabularInline):
     )
 
 
+class ProjectContactInlineAdmin(admin.TabularInline):
+    model = ProjectContact
+    extra = 0
+    fields = ("function", "name", "email")
+
+
+class ProjectLinkInlineAdmin(admin.TabularInline):
+    model = ProjectLink
+    extra = 0
+    fields = ("title", "url")
+
+
+class ProjectDeliverableInlineAdmin(admin.TabularInline):
+    model = ProjectDeliverable
+    extra = 0
+    fields = ("title", "deadline", "is_lead")
+
+
 class ReportingPeriodInlineAdmin(admin.TabularInline):
     model = ReportingPeriod
     extra = 0
@@ -65,6 +86,9 @@ class ProjectAdmin(admin.ModelAdmin):
         OverheadBudgetItemInlineAdmin,
         OtherBudgetItemInlineAdmin,
         ProjectMilestoneInlineAdmin,
+        ProjectDeliverableInlineAdmin,
+        ProjectLinkInlineAdmin,
+        ProjectContactInlineAdmin,
         ReportingPeriodInlineAdmin,
         ProjectSAPFundInlineAdmin,
     ]
