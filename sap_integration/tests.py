@@ -599,7 +599,7 @@ class SAPViewsTests(TestCase):
         self.assertEqual(response.status_code, 404)
 
     def test_pages_are_not_available_when_feature_is_disabled(self):
-        with self.settings(SAP_ENABLED=False, SAP_DATA_DIR=self.data_dir):
+        with self.settings(SAP_ENABLED=False, SAP_GM_IMPORT_ENABLED=False, SAP_DATA_DIR=self.data_dir):
             response = self.client.get(reverse("sap_integration:overview"))
 
         self.assertEqual(response.status_code, 404)
