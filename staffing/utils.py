@@ -506,3 +506,40 @@ def staff_reservations(staff_member):
                 "ignored": bool(check and check.ignored),
             })
     return sorted(result, key=lambda r: (min((s for s, _ in r["periods"]), default=r["position"].first_date or date.max)))
+
+
+def create_planned_employment(data):
+    """Create an employment with one allocation and, with a pay grade, salaries from the TV-L tables.
+
+    data: cleaned data of PlanEmploymentForm. Returns (employment, months without table
+    amount); the months are None if no pay grade was given (no salaries created).
+    """
+    from django.db import transaction
+
+    from .models import StaffFundingAllocation
+
+    with transaction.atomic():
+        staff_member = data["staff_member"] or StaffMember.objects.create(
+            first_name=data["first_name"], last_name=data["last_name"], status="in_hire",
+        )
+        employment = Employment.objects.create(
+            staff_member=staff_member,
+            start_date=data["start_date"],
+            end_date=data["end_date"],
+            percentage=data["percentage"],
+            category=data["category"],
+            status=data["status"],
+            salary_category=data["salary_category"],
+            start_level=data["start_level"],
+            level_start_date=data["level_start_date"] if data["start_level"] else None,
+            statutory_health_insurance=data["statutory_health_insurance"],
+        )
+        StaffFundingAllocation.objects.create(
+            employment=employment,
+            budget_item=data["budget_item"],
+            percentage=data["percentage"],
+            start_date=data["start_date"],
+            end_date=data["end_date"],
+        )
+        missing = apply_tariff_salaries(employment) if data["salary_category"] else None
+    return employment, missing

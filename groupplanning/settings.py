@@ -64,6 +64,7 @@ INSTALLED_APPS = [
     'projects.apps.ProjectsConfig',
     'staffing.apps.StaffingConfig',
     'sap_integration.apps.SAPIntegrationConfig',
+    'mcp_api.apps.McpApiConfig',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',

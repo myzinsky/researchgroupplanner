@@ -234,6 +234,33 @@ Manage user accounts in the Django admin under **Users**. Regular active users
 can access the planner. The admin link and SAP account statements remain limited
 to users with staff status.
 
+## MCP Interface
+
+The planner offers an [MCP](https://modelcontextprotocol.io) endpoint at `/mcp/`
+(Streamable HTTP, JSON responses) so that AI assistants can query the planning.
+
+1. In the Django admin under **MCP-Schnittstelle → API-Tokens**, add a token for a
+   user. The token (`rgp_…`) is shown once after saving; only a hash is stored.
+   Deactivate or delete the token to revoke access.
+2. Connect a client with the header `Authorization: Bearer <token>`, for example:
+
+   ```sh
+   # Claude Code
+   claude mcp add --transport http groupplanner https://planner.example.org/mcp/ \
+     --header "Authorization: Bearer rgp_..."
+   ```
+
+   Clients that only speak stdio (e.g. Claude Desktop) can use the
+   [`mcp-remote`](https://www.npmjs.com/package/mcp-remote) bridge:
+   `npx mcp-remote https://planner.example.org/mcp/ --header "Authorization: Bearer rgp_..."`.
+
+All users with a token get read access (projects and budgets, staff and
+employments, rebookings, warnings, SAP reconciliation, deliverables,
+statistics). Users with staff status additionally get write tools: create,
+complete and delete rebookings, plan an employment and ignore a warning. Write
+calls are written to the `mcp_api` logger (level INFO). Serve the endpoint over HTTPS only, since the token is sent
+with every request.
+
 ## Deployment-Specific Features
 
 Several controlling features can be adapted to the organization through

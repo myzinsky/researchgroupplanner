@@ -186,6 +186,15 @@ def _iterate_month_starts(start_date, end_date):
 
 
 def warnings(request):
+    active_list, ignored_list = collect_warnings()
+    return render(request, "controlling/warnings.html", {
+        "warnings_list": active_list,
+        "ignored_list": ignored_list,
+    })
+
+
+def collect_warnings():
+    """All consistency warnings as (active, ignored) lists; each warning has a stable "key"."""
     today = timezone.now().date()
     warnings_list = []
 
@@ -652,11 +661,7 @@ def warnings(request):
         warning["key"] = IgnoredWarning.key_for(warning)
         warning["ignored"] = ignored.get(warning["key"])
         (ignored_list if warning["ignored"] else active_list).append(warning)
-
-    return render(request, "controlling/warnings.html", {
-        "warnings_list": active_list,
-        "ignored_list": ignored_list,
-    })
+    return active_list, ignored_list
 
 
 @login_required
@@ -924,10 +929,9 @@ def apply_all_sap_salaries(request, staff_id):
     return redirect("warnings")
 
 
-def statistics(request):
-    projects = Project.objects.all().order_by("start_date")
+def funds_by_year(projects):
+    """{year: funds}: each project budget (incl. overhead) spread evenly over its duration incl. extension."""
     yearly_totals = {}
-
     for project in projects:
         effective_end = project.end_date
         if project.extension_planning_date and project.extension_planning_date > project.end_date:
@@ -949,6 +953,12 @@ def statistics(request):
             key = str(current.year)
             yearly_totals[key] = yearly_totals.get(key, Decimal("0.00")) + monthly_share
             current += relativedelta(months=1)
+    return yearly_totals
+
+
+def statistics(request):
+    projects = Project.objects.all().order_by("start_date")
+    yearly_totals = funds_by_year(projects)
 
     sorted_years = sorted(yearly_totals.keys())
     yearly_values = [yearly_totals[year].quantize(Decimal("0.01")) for year in sorted_years]

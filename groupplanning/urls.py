@@ -20,6 +20,8 @@ from django.conf import settings
 from django.urls import include, path
 from django.contrib.staticfiles.urls import staticfiles_urlpatterns
 
+from mcp_api.views import mcp_endpoint
+
 from controlling.views import (
     annual_pools as controlling_annual_pools,
     apply_all_sap_salaries as controlling_apply_all_sap_salaries,
@@ -35,6 +37,8 @@ from controlling.views import (
 )
 
 urlpatterns = [
+    path("mcp/", mcp_endpoint, name="mcp"),
+    path("mcp", mcp_endpoint),
     path(
         "login/",
         auth_views.LoginView.as_view(

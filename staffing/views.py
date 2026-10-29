@@ -21,6 +21,7 @@ from projects.models import EmploymentCategories
 from .forms import AllocationForm, PlanEmploymentForm, RebookingForm
 from .utils import (
     apply_tariff_salaries,
+    create_planned_employment,
     employment_merge_candidates,
     merge_employments,
     get_salaries_by_month,
@@ -264,31 +265,8 @@ def plan_employment(request: HttpRequest):
 
     form = PlanEmploymentForm(request.POST or None, project=project, initial=initial)
     if request.method == "POST" and form.is_valid():
-        data = form.cleaned_data
-        with transaction.atomic():
-            staff_member = data["staff_member"] or StaffMember.objects.create(
-                first_name=data["first_name"], last_name=data["last_name"], status="in_hire",
-            )
-            employment = Employment.objects.create(
-                staff_member=staff_member,
-                start_date=data["start_date"],
-                end_date=data["end_date"],
-                percentage=data["percentage"],
-                category=data["category"],
-                status=data["status"],
-                salary_category=data["salary_category"],
-                start_level=data["start_level"],
-                level_start_date=data["level_start_date"] if data["start_level"] else None,
-                statutory_health_insurance=data["statutory_health_insurance"],
-            )
-            StaffFundingAllocation.objects.create(
-                employment=employment,
-                budget_item=data["budget_item"],
-                percentage=data["percentage"],
-                start_date=data["start_date"],
-                end_date=data["end_date"],
-            )
-            missing = apply_tariff_salaries(employment) if data["salary_category"] else None
+        employment, missing = create_planned_employment(form.cleaned_data)
+        staff_member = employment.staff_member
         messages.success(request, f"Anstellung für {staff_member} ({employment.get_status_display()}) angelegt.")
         if missing:
             messages.warning(
