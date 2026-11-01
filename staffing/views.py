@@ -3,7 +3,6 @@ from controlling.utils import render
 from django.contrib import messages
 from datetime import date, timedelta
 
-from dateutil.relativedelta import relativedelta
 from django.db import transaction
 from django.views.decorators.http import require_POST
 from django.shortcuts import get_object_or_404, redirect
@@ -22,6 +21,7 @@ from .forms import AllocationForm, PlanEmploymentForm, RebookingForm
 from .utils import (
     apply_tariff_salaries,
     create_planned_employment,
+    estimate_from_month,
     employment_merge_candidates,
     merge_employments,
     get_salaries_by_month,
@@ -117,7 +117,7 @@ def details(request: HttpRequest, staff_id: int):
                     employment.start_date,
                 ).isoformat(),
             }
-        employment.estimate_from = _estimate_from(employment, sap_actuals)
+        employment.estimate_from = estimate_from_month(employment, sap_actuals)
         mismatch_months = {mismatch["month"] for mismatch in employment.sap_mismatches}
         employment.salary_rows = [
             (month, salary, sap_actuals.get(month, []), month in mismatch_months)
@@ -282,14 +282,6 @@ def plan_employment(request: HttpRequest):
         "project": project,
         "staff_defaults": staff_defaults,
     })
-
-
-def _estimate_from(employment, sap_actuals):
-    """First month to estimate: after the last month booked in SAP, else the employment start."""
-    if not sap_actuals:
-        return employment.start_date.strftime("%Y-%m")
-    last = date.fromisoformat(f"{max(sap_actuals)}-01")
-    return (last + relativedelta(months=1)).strftime("%Y-%m")
 
 
 @require_POST

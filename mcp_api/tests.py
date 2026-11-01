@@ -7,7 +7,18 @@ from django.test import TestCase, override_settings
 
 from mcp_api.models import ApiToken
 from projects.models import Project, ProjectDeliverable, StaffBudgetItem
-from staffing.models import Employment, Rebooking, StaffFundingAllocation, StaffMember
+from projects.models import SAPFund
+from sap_integration.models import SAPImport, SAPPosition
+from staffing.models import (
+    Employment,
+    EmploymentSalaries,
+    Rebooking,
+    SalaryCategory,
+    SalaryTable,
+    SalaryTableEntry,
+    StaffFundingAllocation,
+    StaffMember,
+)
 
 
 @override_settings(SAP_ENABLED=False, SAP_GM_IMPORT_ENABLED=False)
@@ -25,7 +36,7 @@ class McpEndpointTests(TestCase):
         self.other_item = StaffBudgetItem.objects.create(project=self.other, title="WiMi", amount=Decimal("80000"))
         ProjectDeliverable.objects.create(project=self.project, title="D1", deadline=date(2027, 6, 30), is_lead=True)
         self.member = StaffMember.objects.create(first_name="Erika", last_name="Muster")
-        employment = Employment.objects.create(staff_member=self.member, start_date=date(2026, 1, 1),
+        self.employment = employment = Employment.objects.create(staff_member=self.member, start_date=date(2026, 1, 1),
                                                end_date=date(2027, 12, 31), percentage=Decimal("100"))
         self.allocation = StaffFundingAllocation.objects.create(
             employment=employment, budget_item=self.item, percentage=Decimal("100"), start_date=date(2026, 1, 1),
@@ -138,3 +149,176 @@ class McpEndpointTests(TestCase):
         _, after = self.call("list_warnings", {"include_ignored": True})
         self.assertNotIn(key, [w["key"] for w in after["warnings"]])
         self.assertIn(key, [w["key"] for w in after["ignored_warnings"]])
+
+    # --- update_employment / delete_employment ---
+
+    def add_salary_table(self):
+        e13 = SalaryCategory.objects.create(name="E13")
+        table = SalaryTable.objects.create(name="TV-L 2026", valid_from=date(2026, 1, 1))
+        SalaryTableEntry.objects.create(table=table, salary_category=e13, level=1, amount=Decimal("6000.00"))
+        SalaryTableEntry.objects.create(table=table, salary_category=e13, level=2, amount=Decimal("6400.00"))
+
+    def add_sap_actuals(self, months):
+        self.allocation.sap_reference = "4000123"
+        self.allocation.save()
+        fund = SAPFund.objects.create(fund_number="1/070000001", project=self.project)
+        sap_import = SAPImport.objects.create(fund=fund, file_name="export.xlsx")
+        SAPPosition.objects.create(sap_import=sap_import, reference="4000123", kind="staff", cost_type="812000",
+                                   monthly_actuals={month: "5000.00" for month in months})
+
+    def test_update_employment_reestimates_salaries(self):
+        self.add_salary_table()
+
+        result, data = self.call("update_employment", {
+            "employment_id": self.employment.id, "salary_category": "e13", "start_level": 1, "percentage": 50,
+        }, token=self.staff_token)
+
+        self.assertFalse(result["isError"], data)
+        self.assertTrue(data["salaries_estimated"])
+        employment = data["employment"]
+        self.assertEqual((employment["percentage"], employment["salary_category"]), (50.0, "E13"))
+        self.assertEqual(employment["level_start_date"], "2026-01-01")
+        self.assertEqual(employment["monthly_costs"]["2026-05"]["planned"], 3000.0)
+        self.assertEqual(employment["allocations"][0]["allocation_id"], self.allocation.id)
+        self.assertEqual(data["cost_changes"][0]["budget_item_id"], self.item.id)
+        self.assertGreater(data["cost_changes"][0]["change"], 0)
+
+    def test_update_employment_keeps_months_with_sap_actuals(self):
+        self.add_salary_table()
+        EmploymentSalaries.objects.create(employment=self.employment, salary=Decimal("5000.00"),
+                                          start_date=date(2026, 1, 1), end_date=date(2027, 12, 31))
+        self.add_sap_actuals(["2026-01", "2026-02"])
+
+        result, data = self.call("update_employment", {
+            "employment_id": self.employment.id, "salary_category": "E13", "start_level": 1,
+        }, token=self.staff_token)
+
+        self.assertFalse(result["isError"], data)
+        costs = data["employment"]["monthly_costs"]
+        self.assertEqual(data["salaries_kept_until"], "2026-02")
+        self.assertEqual((costs["2026-01"]["planned"], costs["2026-02"]["planned"]), (5000.0, 5000.0))
+        self.assertEqual(costs["2026-01"]["sap_actual"], 5000.0)
+        self.assertEqual(costs["2026-03"]["planned"], 6000.0)
+
+    def test_update_employment_validation_errors(self):
+        cases = [
+            ({"end_date": "2025-12-31"}, "Ende"),
+            ({"salary_category": "E99"}, "nicht gefunden"),
+            ({"percentage": 0}, "percentage"),
+            ({"status": "unknown"}, "status"),
+            ({"level_start_date": "2026-06-01", "start_level": 1}, "Stufenbeginn"),
+            ({"salary": 5}, "Unbekannte Felder"),
+            ({}, "Keine Änderungen"),
+        ]
+        self.add_salary_table()
+        cases.append(({"salary_category": "E13"}, "Stufe"))
+        for arguments, expected in cases:
+            result, message = self.call("update_employment", {"employment_id": self.employment.id, **arguments},
+                                        token=self.staff_token)
+            self.assertTrue(result["isError"], arguments)
+            self.assertIn(expected, message, arguments)
+        result, message = self.call("update_employment", {"employment_id": 999999, "percentage": 50},
+                                    token=self.staff_token)
+        self.assertIn("Keine Anstellung", message)
+        self.employment.refresh_from_db()
+        self.assertEqual((self.employment.end_date, self.employment.percentage), (date(2027, 12, 31), Decimal("100")))
+
+    def test_update_employment_allocations_outside_period(self):
+        early = StaffFundingAllocation.objects.create(
+            employment=self.employment, budget_item=self.other_item, percentage=Decimal("20"),
+            start_date=date(2026, 1, 1), end_date=date(2026, 2, 28),
+        )
+        arguments = {"employment_id": self.employment.id, "start_date": "2026-03-01", "end_date": "2027-06-30"}
+
+        result, message = self.call("update_employment", arguments, token=self.staff_token)
+
+        self.assertTrue(result["isError"])
+        self.assertIn(f"{self.allocation.id}: MCPX", message)
+        self.assertIn(f"{early.id}: OTHR", message)
+        self.assertIn("clip_allocations", message)
+        self.assertEqual(Employment.objects.get(id=self.employment.id).start_date, date(2026, 1, 1))
+
+        result, data = self.call("update_employment", {**arguments, "clip_allocations": True}, token=self.staff_token)
+
+        self.assertFalse(result["isError"], data)
+        self.allocation.refresh_from_db()
+        self.assertEqual((self.allocation.start_date, self.allocation.end_date), (date(2026, 3, 1), None))
+        self.assertFalse(StaffFundingAllocation.objects.filter(id=early.id).exists())
+        self.assertEqual(len(data["deleted_allocations"]), 1)
+        self.assertEqual([a["allocation_id"] for a in data["employment"]["allocations"]], [self.allocation.id])
+
+    def test_update_employment_clips_explicit_allocation_end(self):
+        self.allocation.end_date = date(2027, 12, 31)
+        self.allocation.save()
+
+        result, data = self.call("update_employment", {
+            "employment_id": self.employment.id, "end_date": "2027-06-30", "clip_allocations": True,
+        }, token=self.staff_token)
+
+        self.assertFalse(result["isError"], data)
+        self.allocation.refresh_from_db()
+        self.assertEqual(self.allocation.end_date, date(2027, 6, 30))
+
+    def test_update_employment_dry_run(self):
+        EmploymentSalaries.objects.create(employment=self.employment, salary=Decimal("5000.00"),
+                                          start_date=date(2026, 1, 1), end_date=date(2027, 12, 31))
+
+        result, data = self.call("update_employment", {
+            "employment_id": self.employment.id, "end_date": "2026-12-31", "dry_run": True,
+        }, token=self.staff_token)
+
+        self.assertFalse(result["isError"], data)
+        self.assertTrue(data["dry_run"])
+        self.assertEqual(data["employment"]["end"], "2026-12-31")
+        self.assertEqual(data["cost_changes"], [{
+            "budget_item_id": self.item.id, "source": "MCPX – WiMi", "before": 120000.0, "after": 60000.0,
+            "change": -60000.0,
+        }])
+        self.employment.refresh_from_db()
+        self.assertEqual(self.employment.end_date, date(2027, 12, 31))
+
+    def test_delete_employment(self):
+        result, message = self.call("delete_employment", {"employment_id": self.employment.id}, token=self.staff_token)
+        self.assertTrue(result["isError"])
+        self.assertIn("delete_allocations", message)
+
+        result, data = self.call("delete_employment", {
+            "employment_id": self.employment.id, "delete_allocations": True, "dry_run": True,
+        }, token=self.staff_token)
+        self.assertFalse(result["isError"], data)
+        self.assertFalse(data["deleted"])
+        self.assertTrue(Employment.objects.filter(id=self.employment.id).exists())
+
+        result, data = self.call("delete_employment", {
+            "employment_id": self.employment.id, "delete_allocations": True,
+        }, token=self.staff_token)
+        self.assertFalse(result["isError"], data)
+        self.assertFalse(Employment.objects.filter(id=self.employment.id).exists())
+        self.assertFalse(StaffFundingAllocation.objects.filter(id=self.allocation.id).exists())
+
+    def test_delete_employment_refuses_rebookings_and_sap_actuals(self):
+        rebooking = Rebooking.objects.create(allocation=self.allocation, budget_item=self.other_item,
+                                             percentage=Decimal("50"), start_date=date(2026, 7, 1))
+        arguments = {"employment_id": self.employment.id, "delete_allocations": True}
+
+        result, message = self.call("delete_employment", arguments, token=self.staff_token)
+        self.assertTrue(result["isError"])
+        self.assertIn("Umbuchungen", message)
+
+        rebooking.delete()
+        self.add_sap_actuals(["2026-01"])
+        result, message = self.call("delete_employment", arguments, token=self.staff_token)
+        self.assertTrue(result["isError"])
+        self.assertIn("SAP-Ist", message)
+        self.assertTrue(Employment.objects.filter(id=self.employment.id).exists())
+
+    def test_employment_write_tools_require_staff(self):
+        tools = {t["name"] for t in self.rpc("tools/list").json()["result"]["tools"]}
+        self.assertFalse({"update_employment", "delete_employment"} & tools)
+
+        result, _ = self.call("update_employment", {"employment_id": self.employment.id, "percentage": 50})
+        self.assertTrue(result["isError"])
+        result, _ = self.call("delete_employment", {"employment_id": self.employment.id, "delete_allocations": True})
+        self.assertTrue(result["isError"])
+        self.employment.refresh_from_db()
+        self.assertEqual(self.employment.percentage, Decimal("100"))

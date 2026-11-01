@@ -239,6 +239,16 @@ def special_payment(employment, year):
     }
 
 
+def estimate_from_month(employment, sap_actuals):
+    """First month to estimate: after the last month booked in SAP, else the employment start."""
+    from datetime import date
+
+    if not sap_actuals:
+        return employment.start_date.strftime("%Y-%m")
+    last = date.fromisoformat(f"{max(sap_actuals)}-01")
+    return (last + relativedelta(months=1)).strftime("%Y-%m")
+
+
 def apply_tariff_salaries(employment, from_month=None):
     """Fill the employment's salaries from the TV-L tables, incl. Jahressonderzahlung in November.
 

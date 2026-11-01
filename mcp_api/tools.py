@@ -131,6 +131,48 @@ def _staff_member(staff_id=None, name=None):
     return candidates[0]
 
 
+def _employment_data(employment):
+    """An employment as listed by get_staff_member: allocations and planned vs. SAP monthly costs."""
+    from staffing.utils import get_salaries_by_month, get_sap_actuals_by_month
+
+    allocations = list(employment.stafffundingallocation_set.select_related(
+        "budget_item__project", "landesstelle", "annual_pool_budget__annual_pool",
+    ).order_by("start_date"))
+    planned = get_salaries_by_month(employment)
+    actuals = get_sap_actuals_by_month(allocations)
+    return {
+        "employment_id": employment.id,
+        "start": _day(employment.start_date),
+        "end": _day(employment.end_date),
+        "percentage": _money(employment.percentage),
+        "category": employment.get_category(),
+        "status": employment.get_status_display(),
+        "salary_category": str(employment.salary_category) if employment.salary_category else None,
+        "start_level": employment.start_level,
+        "level_start_date": _day(employment.level_start_date),
+        "statutory_health_insurance": employment.statutory_health_insurance,
+        "allocations": [
+            {
+                "allocation_id": a.id,
+                "source": _allocation_source(a),
+                "percentage": _money(a.percentage),
+                "start": _day(a.start_date),
+                "end": _day(a.end_date or employment.end_date),
+                "sap_reference": a.sap_reference,
+                "open_rebookings": [_rebooking_data(r) for r in a.rebookings.select_related("budget_item__project")],
+            }
+            for a in allocations
+        ],
+        "monthly_costs": {
+            month: {
+                "planned": _money(amount),
+                "sap_actual": _money(sum((e["amount"] for e in actuals[month]), Decimal("0"))) if month in actuals else None,
+            }
+            for month, amount in planned.items()
+        },
+    }
+
+
 # --- read tools ------------------------------------------------------------
 
 @tool(
@@ -309,47 +351,10 @@ def list_staff(user, include_former=False):
     {"staff_id": {"type": "integer"}, "name": {"type": "string", "description": "Vor- und/oder Nachname"}},
 )
 def get_staff_member(user, staff_id=None, name=None):
-    from staffing.utils import get_salaries_by_month, get_sap_actuals_by_month, staff_reservations
+    from staffing.utils import staff_reservations
 
     member = _staff_member(staff_id, name)
-    employments = []
-    for employment in member.employment_set.order_by("start_date"):
-        allocations = list(employment.stafffundingallocation_set.select_related(
-            "budget_item__project", "landesstelle", "annual_pool_budget__annual_pool",
-        ).order_by("start_date"))
-        planned = get_salaries_by_month(employment)
-        actuals = get_sap_actuals_by_month(allocations)
-        employments.append({
-            "employment_id": employment.id,
-            "start": _day(employment.start_date),
-            "end": _day(employment.end_date),
-            "percentage": _money(employment.percentage),
-            "category": employment.get_category(),
-            "status": employment.get_status_display(),
-            "salary_category": str(employment.salary_category) if employment.salary_category else None,
-            "start_level": employment.start_level,
-            "level_start_date": _day(employment.level_start_date),
-            "statutory_health_insurance": employment.statutory_health_insurance,
-            "allocations": [
-                {
-                    "allocation_id": a.id,
-                    "source": _allocation_source(a),
-                    "percentage": _money(a.percentage),
-                    "start": _day(a.start_date),
-                    "end": _day(a.end_date or employment.end_date),
-                    "sap_reference": a.sap_reference,
-                    "open_rebookings": [_rebooking_data(r) for r in a.rebookings.select_related("budget_item__project")],
-                }
-                for a in allocations
-            ],
-            "monthly_costs": {
-                month: {
-                    "planned": _money(amount),
-                    "sap_actual": _money(sum((e["amount"] for e in actuals[month]), Decimal("0"))) if month in actuals else None,
-                }
-                for month, amount in planned.items()
-            },
-        })
+    employments = [_employment_data(employment) for employment in member.employment_set.order_by("start_date")]
     return {
         "staff_id": member.id,
         "name": str(member),
@@ -644,3 +649,223 @@ def ignore_warning(user, key, comment):
         raise ToolError("Ungültiger Schlüssel.")
     IgnoredWarning.objects.update_or_create(key=key, defaults={"comment": comment, "created_by": user})
     return {"ignored": True}
+
+
+EMPLOYMENT_FIELDS = (
+    "start_date", "end_date", "percentage", "status", "category", "salary_category", "start_level",
+    "level_start_date", "statutory_health_insurance",
+)
+# Changes that alter the monthly costs and therefore trigger a new salary estimate.
+COST_FIELDS = {
+    "start_date", "end_date", "percentage", "salary_category", "start_level", "level_start_date",
+    "statutory_health_insurance",
+}
+
+
+def _employment(employment_id):
+    from staffing.models import Employment
+
+    employment = Employment.objects.select_related("staff_member", "salary_category").filter(id=employment_id).first()
+    if employment is None:
+        raise ToolError(f"Keine Anstellung mit ID {employment_id}.")
+    return employment
+
+
+def _allocation_label(allocation):
+    end = allocation.end_date or allocation.employment.end_date
+    return f"{allocation.id}: {_allocation_source(allocation)} ({_day(allocation.start_date)} – {_day(end)})"
+
+
+def _allocation_costs(employment):
+    """{(budget item id, source): planned cost} of the employment's allocations."""
+    from projects.utils import calculate_salary_for_allocation
+
+    costs = {}
+    for allocation in employment.stafffundingallocation_set.select_related(
+        "employment", "budget_item__project", "landesstelle", "annual_pool_budget__annual_pool",
+    ):
+        key = (allocation.budget_item_id, _allocation_source(allocation))
+        costs[key] = costs.get(key, Decimal("0.00")) + calculate_salary_for_allocation(allocation).salary_sum
+    return costs
+
+
+def _cost_changes(before, after):
+    return [
+        {
+            "budget_item_id": budget_item_id,
+            "source": source,
+            "before": _money(before.get((budget_item_id, source), Decimal("0.00"))),
+            "after": _money(after.get((budget_item_id, source), Decimal("0.00"))),
+            "change": _money(after.get((budget_item_id, source), Decimal("0.00"))
+                             - before.get((budget_item_id, source), Decimal("0.00"))),
+        }
+        for budget_item_id, source in sorted(set(before) | set(after), key=lambda key: key[1])
+    ]
+
+
+def _form_errors(form):
+    return "; ".join(
+        f"{field}: {' '.join(errors)}" if field != "__all__" else " ".join(errors)
+        for field, errors in form.errors.items()
+    )
+
+
+@tool(
+    "update_employment",
+    "Ändert eine Anstellung (employment_id aus get_staff_member); nur übergebene Felder werden geändert, null leert "
+    "ein Feld. Bei Änderungen an Zeitraum, Umfang, Entgeltgruppe, Stufe oder Versicherung werden die geplanten "
+    "Gehälter wie bei plan_employment neu geschätzt, Monate mit SAP-Ist bleiben unverändert. Zuordnungen außerhalb "
+    "des neuen Zeitraums sind ein Fehler, mit clip_allocations=true werden sie gekürzt bzw. gelöscht. "
+    "dry_run=true prüft nur und zeigt das Ergebnis samt Kostenänderung je Budget, ohne zu speichern.",
+    {
+        "employment_id": {"type": "integer"},
+        "start_date": {"type": "string", "description": "JJJJ-MM-TT"},
+        "end_date": {"type": "string", "description": "JJJJ-MM-TT"},
+        "percentage": {"type": "number"},
+        "status": {"type": "string", "enum": ["planned", "contract", "rebook"]},
+        "category": {"type": "string", "enum": ["researcher", "undergrad", "student", "professor"]},
+        "salary_category": {"type": ["string", "null"], "description": "Name der Entgeltgruppe, z. B. E13"},
+        "start_level": {"type": ["integer", "null"], "minimum": 1, "maximum": 6},
+        "level_start_date": {"type": ["string", "null"], "description": "JJJJ-MM-TT"},
+        "statutory_health_insurance": {"type": "boolean"},
+        "clip_allocations": {"type": "boolean"},
+        "dry_run": {"type": "boolean"},
+    },
+    required=["employment_id"],
+    write=True,
+)
+def update_employment(user, employment_id, clip_allocations=False, dry_run=False, **changes):
+    from django.db import transaction
+    from django.forms.models import model_to_dict
+
+    from staffing.forms import EmploymentForm
+    from staffing.models import Rebooking, SalaryCategory
+    from staffing.utils import apply_tariff_salaries, estimate_from_month, get_sap_actuals_by_month
+
+    unknown = sorted(set(changes) - set(EMPLOYMENT_FIELDS))
+    if unknown:
+        raise ToolError("Unbekannte Felder: " + ", ".join(unknown))
+    if not changes:
+        raise ToolError("Keine Änderungen angegeben.")
+    employment = _employment(employment_id)
+
+    data = {key: "" if value is None else value for key, value in model_to_dict(employment, EMPLOYMENT_FIELDS).items()}
+    for field, value in changes.items():
+        if field == "salary_category" and value not in (None, ""):
+            found = SalaryCategory.objects.filter(name__iexact=value).first()
+            if found is None:
+                raise ToolError(f"Entgeltgruppe „{value}“ nicht gefunden.")
+            value = found.id
+        data[field] = "" if value is None else value
+    if data.pop("statutory_health_insurance"):
+        data["statutory_health_insurance"] = "on"
+    form = EmploymentForm(data, instance=employment)
+    if not form.is_valid():
+        raise ToolError(_form_errors(form))
+    new_start, new_end = form.cleaned_data["start_date"], form.cleaned_data["end_date"]
+
+    allocations = list(employment.stafffundingallocation_set.select_related(
+        "employment", "budget_item__project", "landesstelle", "annual_pool_budget__annual_pool",
+    ).order_by("start_date"))
+    outside = [
+        a for a in allocations
+        if a.start_date < new_start or a.start_date > new_end or (a.end_date and a.end_date > new_end)
+    ]
+    if outside and not clip_allocations:
+        raise ToolError(
+            f"Zuordnungen liegen außerhalb des neuen Zeitraums ({_day(new_start)} – {_day(new_end)}): "
+            + "; ".join(_allocation_label(a) for a in outside)
+            + ". Mit clip_allocations=true werden sie gekürzt bzw. gelöscht."
+        )
+
+    before = _allocation_costs(employment)
+    sap_actuals = get_sap_actuals_by_month(allocations)
+    cost_relevant = bool(COST_FIELDS & set(form.changed_data))
+    clipped, deleted = [], []
+    with transaction.atomic():
+        employment = form.save()
+        for allocation in outside:
+            label = _allocation_label(allocation)
+            allocation.employment = employment
+            allocation.start_date = max(allocation.start_date, new_start)
+            if allocation.end_date and allocation.end_date > new_end:
+                allocation.end_date = new_end
+            if allocation.start_date > (allocation.end_date or new_end):
+                allocation.delete()
+                deleted.append(label)
+                continue
+            try:
+                allocation.full_clean()
+            except ValidationError as error:
+                raise ToolError(f"Zuordnung {label}: " + " ".join(error.messages))
+            allocation.save()
+            clipped.append(_allocation_label(allocation))
+        for rebooking in Rebooking.objects.filter(allocation__employment=employment).select_related("allocation__employment"):
+            try:
+                rebooking.full_clean()
+            except ValidationError as error:
+                raise ToolError(f"Offene Umbuchung {rebooking.id} passt nicht mehr: " + " ".join(error.messages))
+
+        estimated, missing = False, []
+        if cost_relevant and employment.salary_category_id and employment.start_level:
+            missing = apply_tariff_salaries(employment, from_month=estimate_from_month(employment, sap_actuals))
+            estimated = True
+        employment.refresh_from_db()
+        result = {
+            "dry_run": bool(dry_run),
+            "employment": _employment_data(employment),
+            "salaries_estimated": estimated,
+            "months_without_table_amount": missing,
+            "salaries_kept_until": max(sap_actuals) if estimated and sap_actuals else None,
+            "clipped_allocations": clipped,
+            "deleted_allocations": deleted,
+            "cost_changes": _cost_changes(before, _allocation_costs(employment)),
+        }
+        if cost_relevant and not estimated:
+            result["notice"] = "Ohne Entgeltgruppe und Stufe wurden die Gehälter nicht neu geschätzt."
+        if dry_run:
+            transaction.set_rollback(True)
+    return result
+
+
+@tool(
+    "delete_employment",
+    "Löscht eine Anstellung mit ihren geplanten Gehältern. Mit Zuordnungen nur bei delete_allocations=true; "
+    "nie bei offenen Umbuchungen oder SAP-Ist-Gehältern. dry_run=true zeigt nur, was gelöscht würde.",
+    {
+        "employment_id": {"type": "integer"},
+        "delete_allocations": {"type": "boolean"},
+        "dry_run": {"type": "boolean"},
+    },
+    required=["employment_id"],
+    write=True,
+)
+def delete_employment(user, employment_id, delete_allocations=False, dry_run=False):
+    from staffing.models import Rebooking
+    from staffing.utils import get_sap_actuals_by_month
+
+    employment = _employment(employment_id)
+    allocations = list(employment.stafffundingallocation_set.select_related(
+        "employment", "budget_item__project", "landesstelle", "annual_pool_budget__annual_pool",
+    ).order_by("start_date"))
+    rebookings = list(Rebooking.objects.filter(allocation__employment=employment).values_list("id", flat=True))
+    if rebookings:
+        raise ToolError("Die Anstellung hat offene Umbuchungen (IDs " + ", ".join(map(str, rebookings))
+                        + "); bitte zuerst abschließen oder löschen.")
+    sap_actuals = get_sap_actuals_by_month(allocations)
+    if sap_actuals:
+        raise ToolError("Zur Anstellung gibt es SAP-Ist-Gehälter (" + ", ".join(sorted(sap_actuals))
+                        + "); sie wird nicht gelöscht.")
+    if allocations and not delete_allocations:
+        raise ToolError("Die Anstellung hat Zuordnungen: " + "; ".join(_allocation_label(a) for a in allocations)
+                        + ". Mit delete_allocations=true werden sie mitgelöscht.")
+    result = {
+        "dry_run": bool(dry_run),
+        "deleted": not dry_run,
+        "employment": _employment_data(employment),
+        "deleted_allocations": [_allocation_label(a) for a in allocations],
+        "cost_changes": _cost_changes(_allocation_costs(employment), {}),
+    }
+    if not dry_run:
+        employment.delete()
+    return result

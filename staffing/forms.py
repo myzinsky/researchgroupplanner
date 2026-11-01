@@ -1,8 +1,17 @@
 from django import forms
+from django.core.validators import MaxValueValidator, MinValueValidator
 
 from projects.models import EmploymentCategories, StaffBudgetItem
 
-from .models import EMPLOYMENT_STATUSES, MAX_LEVEL, Rebooking, SalaryCategory, StaffFundingAllocation, StaffMember
+from .models import (
+    EMPLOYMENT_STATUSES,
+    MAX_LEVEL,
+    Employment,
+    Rebooking,
+    SalaryCategory,
+    StaffFundingAllocation,
+    StaffMember,
+)
 
 
 class DateInput(forms.DateInput):
@@ -70,6 +79,34 @@ class PlanEmploymentForm(forms.Form):
         level_start = data.get("level_start_date")
         if level_start and start and level_start > start:
             self.add_error("level_start_date", "Der Stufenbeginn darf nicht nach dem Beginn der Anstellung liegen.")
+        return data
+
+
+class EmploymentForm(forms.ModelForm):
+    """Edit an employment's period, extent, status and pay grade; same checks as PlanEmploymentForm."""
+
+    class Meta:
+        model = Employment
+        fields = [
+            "start_date", "end_date", "percentage", "category", "status", "salary_category", "start_level",
+            "level_start_date", "statutory_health_insurance",
+        ]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["percentage"].validators += [MinValueValidator(1), MaxValueValidator(100)]
+
+    def clean(self):
+        data = super().clean()
+        start, end = data.get("start_date"), data.get("end_date")
+        if start and end and end < start:
+            self.add_error("end_date", "Das Ende darf nicht vor dem Beginn liegen.")
+        if data.get("salary_category") and not data.get("start_level"):
+            self.add_error("start_level", "Bitte die Stufe zur Entgeltgruppe angeben.")
+        if data.get("start_level") and not data.get("level_start_date"):
+            data["level_start_date"] = start
+        if not data.get("start_level"):
+            data["level_start_date"] = None
         return data
 
 
