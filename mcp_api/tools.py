@@ -1621,3 +1621,267 @@ def budget_capacity(user, acronym=None, from_date=None, monthly_cost=None):
     if acronym is None and not result:
         raise ToolError("Keine Personalbudgets gefunden.")
     return {"from": _day(start), "budget_items": result}
+
+
+
+# --- Sachmittel (other budget items) ---
+
+def _other_item(budget_item_id):
+    from projects.models import OtherBudgetItem
+
+    item = OtherBudgetItem.objects.select_related("project").filter(pk=budget_item_id).first()
+    if item is None:
+        raise ToolError(f"Sachmittelbudget {budget_item_id} nicht gefunden.")
+    return item
+
+
+def _transaction_data(entry):
+    return {
+        "transaction_id": entry.id,
+        "budget_item_id": entry.budget_item_id,
+        "date": _day(entry.date),
+        "amount": _money(entry.amount),
+        "description": entry.description or "",
+        "sap_id": entry.sap_id or "",
+    }
+
+
+def _other_item_total(item):
+    return sum((t.amount for t in item.otherbudgetitemtransaction_set.all()), Decimal("0"))
+
+
+def _other_change(item, before):
+    after = _other_item_total(item)
+    return {"budget_item_id": item.id, "source": f"{item.project.acronym} – {item.title}", "amount": _money(item.amount),
+            "before": _money(before), "after": _money(after), "change": _money(after - before),
+            "remaining": _money(item.amount - after)}
+
+
+@tool(
+    "list_transactions",
+    "Sachmittel eines Projekts: je Sachmittelbudget (budget_item_id) Betrag, geplante Buchungen "
+    "(transaction_id, Datum, Betrag, Beschreibung, SAP-Referenz) und Rest.",
+    {"acronym": {"type": "string"}},
+    required=["acronym"],
+)
+def list_transactions(user, acronym):
+    from projects.models import OtherBudgetItem
+
+    project = _project(acronym)
+    items = []
+    for item in OtherBudgetItem.objects.filter(project=project).order_by("id"):
+        entries = list(item.otherbudgetitemtransaction_set.order_by("date", "id"))
+        planned = sum((t.amount for t in entries), Decimal("0"))
+        items.append({
+            "budget_item_id": item.id, "title": item.title, "amount": _money(item.amount),
+            "planned": _money(planned), "remaining": _money(item.amount - planned),
+            "transactions": [_transaction_data(t) for t in entries],
+        })
+    return {"project": project.acronym, "other_budget_items": items}
+
+
+TRANSACTION_SCHEMA = {
+    "date": {"type": "string", "description": "JJJJ-MM-TT"},
+    "amount": {"type": "number"},
+    "description": {"type": "string"},
+    "sap_id": {"type": "string", "description": "SAP-Referenz(en), kommagetrennt"},
+}
+
+
+def _apply_transaction_fields(entry, changes):
+    from decimal import InvalidOperation
+
+    for field, value in changes.items():
+        if field == "date":
+            value = _optional_day(value, "date", None)
+            if value is None:
+                raise ToolError("date darf nicht leer sein.")
+        elif field == "amount":
+            try:
+                value = Decimal(str(value)).quantize(Decimal("0.01"))
+            except (InvalidOperation, ValueError):
+                raise ToolError(f"amount: Betrag erwartet, erhalten: {value!r}")
+        elif field == "budget_item_id":
+            new_item = _other_item(value)
+            if new_item.project_id != entry.budget_item.project_id:
+                raise ToolError("Das Sachmittelbudget gehört zu einem anderen Projekt.")
+            entry.budget_item = new_item
+            continue
+        setattr(entry, field, value)
+
+
+@tool(
+    "create_transaction",
+    "Legt eine geplante Sachmittel-Buchung an (budget_item_id aus list_transactions/list_budget_items kind=other). "
+    "dry_run=true prüft nur.",
+    {"budget_item_id": {"type": "integer"}, **TRANSACTION_SCHEMA, "dry_run": {"type": "boolean"}},
+    required=["budget_item_id", "date", "amount"],
+    write=True,
+)
+def create_transaction(user, budget_item_id, dry_run=False, **fields):
+    from django.db import transaction
+
+    from projects.models import OtherBudgetItemTransaction
+
+    item = _other_item(budget_item_id)
+    before = _other_item_total(item)
+    entry = OtherBudgetItemTransaction(budget_item=item)
+    _apply_transaction_fields(entry, fields)
+    with transaction.atomic():
+        entry.save()
+        result = {"dry_run": bool(dry_run), "transaction": _transaction_data(entry),
+                  "cost_changes": [_other_change(item, before)]}
+        if dry_run:
+            transaction.set_rollback(True)
+    return result
+
+
+@tool(
+    "update_transaction",
+    "Ändert eine geplante Sachmittel-Buchung; nur übergebene Felder (auch budget_item_id im selben Projekt). "
+    "dry_run=true prüft nur.",
+    {"transaction_id": {"type": "integer"}, "budget_item_id": {"type": "integer"}, **TRANSACTION_SCHEMA,
+     "dry_run": {"type": "boolean"}},
+    required=["transaction_id"],
+    write=True,
+)
+def update_transaction(user, transaction_id, dry_run=False, **changes):
+    from django.db import transaction
+
+    from projects.models import OtherBudgetItemTransaction
+
+    entry = OtherBudgetItemTransaction.objects.select_related("budget_item__project").filter(pk=transaction_id).first()
+    if entry is None:
+        raise ToolError(f"Buchung {transaction_id} nicht gefunden.")
+    if not changes:
+        raise ToolError("Keine Änderungen angegeben.")
+    old_item = entry.budget_item
+    _apply_transaction_fields(entry, changes)
+    items = [old_item] + ([entry.budget_item] if entry.budget_item.id != old_item.id else [])
+    before = {item.id: _other_item_total(item) for item in items}
+    with transaction.atomic():
+        entry.save()
+        result = {"dry_run": bool(dry_run), "transaction": _transaction_data(entry),
+                  "cost_changes": [_other_change(item, before[item.id]) for item in items]}
+        if dry_run:
+            transaction.set_rollback(True)
+    return result
+
+
+@tool(
+    "delete_transaction",
+    "Löscht eine geplante Sachmittel-Buchung. dry_run=true prüft nur.",
+    {"transaction_id": {"type": "integer"}, "dry_run": {"type": "boolean"}},
+    required=["transaction_id"],
+    write=True,
+)
+def delete_transaction(user, transaction_id, dry_run=False):
+    from django.db import transaction
+
+    from projects.models import OtherBudgetItemTransaction
+
+    entry = OtherBudgetItemTransaction.objects.select_related("budget_item__project").filter(pk=transaction_id).first()
+    if entry is None:
+        raise ToolError(f"Buchung {transaction_id} nicht gefunden.")
+    item = entry.budget_item
+    before = _other_item_total(item)
+    data = _transaction_data(entry)
+    with transaction.atomic():
+        entry.delete()
+        result = {"dry_run": bool(dry_run), "deleted": not dry_run, "transaction": data,
+                  "cost_changes": [_other_change(item, before)]}
+        if dry_run:
+            transaction.set_rollback(True)
+    return result
+
+
+def _sap_fund(psp_element):
+    from projects.models import SAPFund
+
+    fund = SAPFund.objects.select_related("project").filter(fund_number=psp_element).first()
+    if fund is None or fund.project is None:
+        raise ToolError(f"PSP-Element „{psp_element}“ ist keinem Projekt zugeordnet.")
+    return fund
+
+
+@tool(
+    "map_sap_cost_type",
+    "Ordnet eine SAP-E/A-Art eines PSP-Elements einem Budget des Projekts zu (wie im SAP-Abgleich). "
+    "kind=other (Standard) oder staff; budget_item_id=null entfernt die Zuordnung. dry_run=true prüft nur.",
+    {
+        "psp_element": {"type": "string", "description": "z. B. 1/070004900"},
+        "cost_type": {"type": "string", "description": "E/A-Art, z. B. 7431"},
+        "budget_item_id": {"type": ["integer", "null"]},
+        "kind": {"type": "string", "enum": ["other", "staff"]},
+        "dry_run": {"type": "boolean"},
+    },
+    required=["psp_element", "cost_type", "budget_item_id"],
+    write=True,
+)
+def map_sap_cost_type(user, psp_element, cost_type, budget_item_id, kind="other", dry_run=False):
+    from django.db import transaction
+
+    from projects.models import OtherBudgetItem, StaffBudgetItem
+    from sap_integration.models import SAPCostTypeMapping
+
+    fund = _sap_fund(psp_element)
+    cost_type = str(cost_type).strip()
+    with transaction.atomic():
+        if budget_item_id is None:
+            deleted, _ = SAPCostTypeMapping.objects.filter(fund=fund, cost_type=cost_type).delete()
+            result = {"dry_run": bool(dry_run), "psp_element": psp_element, "cost_type": cost_type,
+                      "removed": bool(deleted)}
+        else:
+            model = OtherBudgetItem if kind == "other" else StaffBudgetItem
+            item = model.objects.filter(pk=budget_item_id, project=fund.project).first()
+            if item is None:
+                raise ToolError(f"Budget {budget_item_id} ({kind}) gehört nicht zum Projekt {fund.project}.")
+            mapping, _ = SAPCostTypeMapping.objects.get_or_create(fund=fund, cost_type=cost_type)
+            mapping.staff_budget_item = item if kind == "staff" else None
+            mapping.other_budget_item = item if kind == "other" else None
+            mapping.save()
+            result = {"dry_run": bool(dry_run), "psp_element": psp_element, "cost_type": cost_type,
+                      "budget_item_id": item.id, "kind": kind, "title": item.title}
+        if dry_run:
+            transaction.set_rollback(True)
+    return result
+
+
+@tool(
+    "create_transaction_from_sap",
+    "Legt für eine SAP-Sachmittelposition (Referenz aus get_sap_reconciliation) eine geplante Buchung im "
+    "angegebenen Sachmittelbudget an, mit Betrag, Datum und Beschreibung aus SAP (wie „Planungseintrag anlegen“). "
+    "dry_run=true prüft nur.",
+    {
+        "psp_element": {"type": "string"},
+        "sap_reference": {"type": "string"},
+        "budget_item_id": {"type": "integer"},
+        "dry_run": {"type": "boolean"},
+    },
+    required=["psp_element", "sap_reference", "budget_item_id"],
+    write=True,
+)
+def create_transaction_from_sap(user, psp_element, sap_reference, budget_item_id, dry_run=False):
+    from django.db import transaction
+
+    from sap_integration.models import SAPPosition
+    from sap_integration.transform import create_transaction as create_from_position
+
+    fund = _sap_fund(psp_element)
+    item = _other_item(budget_item_id)
+    if item.project_id != fund.project_id:
+        raise ToolError(f"Sachmittelbudget {budget_item_id} gehört nicht zum Projekt {fund.project}.")
+    latest = fund.sap_imports.order_by("-imported_at").first()
+    position = SAPPosition.objects.filter(sap_import=latest, reference=str(sap_reference).strip()).first()
+    if position is None:
+        raise ToolError(f"SAP-Position {sap_reference} im PSP-Element {psp_element} nicht gefunden.")
+    if position.planned_amount is None:
+        raise ToolError(f"SAP-Position {sap_reference} hat keinen Betrag.")
+    before = _other_item_total(item)
+    with transaction.atomic():
+        entry = create_from_position(position, item)
+        result = {"dry_run": bool(dry_run), "transaction": _transaction_data(entry),
+                  "cost_changes": [_other_change(item, before)]}
+        if dry_run:
+            transaction.set_rollback(True)
+    return result

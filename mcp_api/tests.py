@@ -769,6 +769,66 @@ class McpEndpointTests(TestCase):
         self.assertEqual(item["planned_by_year"], {"2026": 60000.0, "2027": 60000.0})
         self.assertEqual(item["person_months_fundable"], -8.0)
 
+    def test_transactions_crud(self):
+        from projects.models import OtherBudgetItem, OtherBudgetItemTransaction
+
+        travel = OtherBudgetItem.objects.create(project=self.project, title="Reisen", amount=Decimal("5000"))
+        equipment = OtherBudgetItem.objects.create(project=self.project, title="Geräte", amount=Decimal("2000"))
+        foreign = OtherBudgetItem.objects.create(project=self.other, title="Reisen", amount=Decimal("1000"))
+        arguments = {"budget_item_id": travel.id, "date": "2026-05-04", "amount": 1200, "description": "Konferenz"}
+
+        result, data = self.call("create_transaction", {**arguments, "dry_run": True}, token=self.staff_token)
+        self.assertFalse(result["isError"], data)
+        self.assertEqual(data["cost_changes"][0]["remaining"], 3800.0)
+        self.assertFalse(OtherBudgetItemTransaction.objects.exists())
+
+        _, data = self.call("create_transaction", arguments, token=self.staff_token)
+        transaction_id = data["transaction"]["transaction_id"]
+        _, data = self.call("update_transaction", {"transaction_id": transaction_id, "budget_item_id": equipment.id,
+                                                   "amount": 900}, token=self.staff_token)
+        self.assertEqual([c["change"] for c in data["cost_changes"]], [-1200.0, 900.0])
+        result, message = self.call("update_transaction", {"transaction_id": transaction_id,
+                                                           "budget_item_id": foreign.id}, token=self.staff_token)
+        self.assertIn("anderen Projekt", message)
+
+        _, data = self.call("list_transactions", {"acronym": "MCPX"})
+        self.assertEqual([(i["title"], i["planned"]) for i in data["other_budget_items"]],
+                         [("Reisen", 0.0), ("Geräte", 900.0)])
+
+        _, data = self.call("delete_transaction", {"transaction_id": transaction_id}, token=self.staff_token)
+        self.assertTrue(data["deleted"])
+        self.assertFalse(OtherBudgetItemTransaction.objects.exists())
+        result, _ = self.call("create_transaction", arguments)
+        self.assertTrue(result["isError"])
+
+    def test_sap_cost_type_and_transaction_from_sap(self):
+        from projects.models import OtherBudgetItem
+        from sap_integration.models import SAPCostTypeMapping
+
+        travel = OtherBudgetItem.objects.create(project=self.project, title="Reisen", amount=Decimal("5000"))
+        fund = SAPFund.objects.create(fund_number="1/070000001", project=self.project)
+        sap_import = SAPImport.objects.create(fund=fund, file_name="export.xlsx")
+        SAPPosition.objects.create(sap_import=sap_import, reference="8001234", kind="travel", cost_type="7431",
+                                   title="RKE Testreise", actual=Decimal("300"))
+
+        _, data = self.call("map_sap_cost_type", {"psp_element": "1/070000001", "cost_type": "7431",
+                                                  "budget_item_id": travel.id}, token=self.staff_token)
+        self.assertEqual(SAPCostTypeMapping.objects.get(fund=fund, cost_type="7431").other_budget_item, travel)
+        result, message = self.call("map_sap_cost_type", {"psp_element": "1/9", "cost_type": "1",
+                                                           "budget_item_id": travel.id}, token=self.staff_token)
+        self.assertIn("PSP-Element", message)
+
+        result, data = self.call("create_transaction_from_sap", {
+            "psp_element": "1/070000001", "sap_reference": "8001234", "budget_item_id": travel.id,
+        }, token=self.staff_token)
+        self.assertFalse(result["isError"], data)
+        self.assertEqual(data["transaction"]["sap_id"], "8001234")
+        self.assertIn("RKE Testreise", data["transaction"]["description"])
+
+        _, data = self.call("map_sap_cost_type", {"psp_element": "1/070000001", "cost_type": "7431",
+                                                  "budget_item_id": None}, token=self.staff_token)
+        self.assertTrue(data["removed"])
+
     def test_update_project(self):
         arguments = {"acronym": "mcpx", "start_date": "2025-10-01", "extension_until": "2029-03-31",
                      "no_overhead": True}
