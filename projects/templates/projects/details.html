@@ -33,6 +33,19 @@
         </td>
     </tr>
     {% endif %}
+    {% if sap_funds %}
+    <tr>
+        <th>SAP (PSP-Element):</th>
+        <td>
+            {% for fund in sap_funds %}
+                <div>
+                    {% if fund.url %}<a href="{{ fund.url }}" title="Ist-Stand in SAP">{{ fund.number }}</a>{% else %}{{ fund.number }}{% endif %}
+                    {% if fund.label %}<span class="text-muted">{{ fund.label }}</span>{% endif %}
+                </div>
+            {% endfor %}
+        </td>
+    </tr>
+    {% endif %}
     {% if links %}
     <tr>
         <th>Links:</th>

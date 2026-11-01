@@ -80,3 +80,18 @@ class DeliverableTests(TestCase):
         response = self.client.get(reverse("main"))
 
         self.assertIn("LASTDAY", [p.acronym for p in response.context["projects"]])
+
+    def test_overview_links_sap_fund(self):
+        from projects.models import SAPFund
+        from sap_integration.models import SAPImport
+
+        fund = SAPFund.objects.create(fund_number="1/070009900", project=self.project)
+        with self.settings(SAP_ENABLED=False, SAP_GM_IMPORT_ENABLED=True):
+            response = self.client.get(reverse("projects:details", args=["DLV"]))
+            self.assertContains(response, "1/070009900")
+            self.assertEqual(response.context["sap_funds"][0]["url"], None)
+
+            SAPImport.objects.create(fund=fund, file_name="export.xlsx")
+            response = self.client.get(reverse("projects:details", args=["DLV"]))
+            self.assertEqual(response.context["sap_funds"][0]["url"],
+                             reverse("sap_integration:reconciliation", args=[fund.id]))

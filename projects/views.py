@@ -56,6 +56,28 @@ def _rebooked_cell(amount, pm, rebooked, rebooked_pm):
     return amount, pm, rebooked, rebooked_pm
 
 
+def _sap_fund_links(project):
+    """[{"number", "url"}] of the project's active SAP funds, linked to their Ist-Stand page.
+
+    With the SAP WebGUI data the fund page of the latest year, otherwise (only
+    project exports) the fund's reconciliation, or no link.
+    """
+    from django.conf import settings
+
+    from sap_integration.cache import available_years
+
+    years = available_years(settings.SAP_DATA_DIR) if settings.SAP_ENABLED else []
+    links = []
+    for fund in project.sap_funds.filter(is_active=True).order_by("fund_number"):
+        url = None
+        if years:
+            url = reverse("sap_integration:fund_detail", args=[years[0], fund.id])
+        elif settings.SAP_GM_IMPORT_ENABLED and fund.sap_imports.exists():
+            url = reverse("sap_integration:reconciliation", args=[fund.id])
+        links.append({"number": fund.fund_number, "label": fund.label, "url": url})
+    return links
+
+
 def details(request: HttpRequest, acronym: str):
     project = get_object_or_404(Project, acronym=acronym)
 
@@ -230,6 +252,7 @@ def details(request: HttpRequest, acronym: str):
         "reporting": reporting,
         "deliverables": list(project.deliverables.all()),
         "links": list(project.links.order_by("title")),
+        "sap_funds": _sap_fund_links(project),
         "contacts": list(project.contacts.order_by("function", "name")),
         "today": timezone.now().date(),
         "soon": timezone.now().date() + timedelta(days=30),
