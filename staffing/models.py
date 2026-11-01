@@ -2,6 +2,7 @@ from decimal import Decimal
 
 from dateutil.relativedelta import relativedelta
 from django.db import models
+from django.db.models import Q
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 
@@ -135,6 +136,49 @@ class SalaryTableEntry(models.Model):
         return f"{self.salary_category} Stufe {self.level}: {self.amount}"
 
 
+# Monthly hours per weekly hour (52 weeks / 12 months); 40 hours a week are 100 %.
+WEEKS_PER_MONTH = Decimal("4.348")
+FULL_TIME_WEEKLY_HOURS = Decimal("40")
+
+
+class StudentHourlyRate(models.Model):
+    """Hourly rate of student assistants (SHK) with or without a bachelor's degree for a period."""
+
+    has_bachelor = models.BooleanField("Mit Bachelor", default=False)
+    hourly_rate = models.DecimalField("Stundensatz (€)", max_digits=6, decimal_places=2)
+    employer_share = models.DecimalField(
+        "Arbeitgeberanteil (%)", max_digits=5, decimal_places=2, default=Decimal("0"),
+        help_text="Aufschlag auf den Stundensatz für die Arbeitgeberanteile.",
+    )
+    valid_from = models.DateField("Gültig ab")
+    valid_until = models.DateField("Gültig bis", null=True, blank=True)
+
+    class Meta:
+        ordering = ["has_bachelor", "valid_from"]
+        verbose_name = "SHK-Stundensatz"
+        verbose_name_plural = "SHK-Stundensätze"
+
+    def __str__(self):
+        degree = "mit Bachelor" if self.has_bachelor else "ohne Bachelor"
+        return f"SHK {degree}: {self.hourly_rate} € ab {self.valid_from:%d.%m.%Y}"
+
+    def clean(self):
+        super().clean()
+        if self.valid_until and self.valid_from and self.valid_until < self.valid_from:
+            raise ValidationError("„Gültig bis“ darf nicht vor „Gültig ab“ liegen.")
+
+    @classmethod
+    def valid_on(cls, has_bachelor, day):
+        return cls.objects.filter(
+            Q(valid_until__isnull=True) | Q(valid_until__gte=day), has_bachelor=has_bachelor, valid_from__lte=day,
+        ).order_by("-valid_from").first()
+
+    def monthly_cost(self, percentage):
+        """Monthly cost incl. employer share for an extent in percent (40 h a week = 100 %)."""
+        hours = FULL_TIME_WEEKLY_HOURS * Decimal(percentage) / Decimal("100") * WEEKS_PER_MONTH
+        return (self.hourly_rate * hours * (1 + self.employer_share / Decimal("100"))).quantize(Decimal("0.01"))
+
+
 def tariff_entry(salary_category, level, day):
     """Salary table entry valid on the day, or None."""
     return SalaryTableEntry.objects.filter(
@@ -186,6 +230,10 @@ class Employment(models.Model):
         blank=True,
         help_text="Ab wann die Stufe bei Beginn gilt; daraus folgen die weiteren Stufenaufstiege.",
     )
+    has_bachelor = models.BooleanField(
+        "SHK mit Bachelor", default=False,
+        help_text="Für Studentische Hilfskräfte: Stundensatz mit Bachelorabschluss.",
+    )
 
     def __str__(self):
         return f"{self.staff_member} - {EmploymentCategories[self.category]} ({self.percentage}%)"
@@ -210,12 +258,24 @@ class Employment(models.Model):
                 current = level
         return current
 
+    def is_hourly_paid(self):
+        """Student assistants without pay grade are paid by the SHK hourly rate."""
+        return self.category == "student" and not self.salary_category_id
+
+    def has_salary_basis(self):
+        """Whether salaries can be estimated: pay grade and level, or SHK hourly rate."""
+        return bool(self.salary_category_id and self.start_level) or self.is_hourly_paid()
+
     def tariff_amount_at(self, day):
         """Monthly cost incl. employer contributions of this employment on a day, or None.
 
         The salary table holds full-time amounts; part-time scales by the
-        employment percentage.
+        employment percentage. Student assistants without pay grade use the
+        SHK hourly rate.
         """
+        if self.is_hourly_paid():
+            rate = StudentHourlyRate.valid_on(self.has_bachelor, day)
+            return rate.monthly_cost(self.percentage) if rate else None
         level = self.level_at(day)
         if level is None or self.salary_category_id is None:
             return None

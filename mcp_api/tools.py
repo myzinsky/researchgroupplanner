@@ -173,6 +173,7 @@ def _employment_data(employment):
         "start_level": employment.start_level,
         "level_start_date": _day(employment.level_start_date),
         "statutory_health_insurance": employment.statutory_health_insurance,
+        "has_bachelor": employment.has_bachelor,
         "allocations": [_allocation_data(a) for a in allocations],
         "monthly_costs": {
             month: {
@@ -588,7 +589,8 @@ def delete_rebooking(user, rebooking_id):
     "plan_employment",
     "Plant eine Anstellung mit Zuordnung zu einem Personalbudget (wie „Anstellung planen“). Bestehende Person per "
     "staff_id oder neue per first_name/last_name. Mit salary_category (z. B. E13) und start_level werden die "
-    "Gehälter aus den TV-L-Tabellen geschätzt.",
+    "Gehälter aus den TV-L-Tabellen geschätzt, für category=student ohne Entgeltgruppe aus dem SHK-Stundensatz "
+    "(has_bachelor: Satz mit Bachelor; 40 h/Woche = 100 %).",
     {
         "staff_id": {"type": "integer"},
         "first_name": {"type": "string"},
@@ -603,13 +605,14 @@ def delete_rebooking(user, rebooking_id):
         "start_level": {"type": "integer", "minimum": 1, "maximum": 6},
         "level_start_date": {"type": "string", "description": "JJJJ-MM-TT, optional"},
         "statutory_health_insurance": {"type": "boolean"},
+        "has_bachelor": {"type": "boolean"},
     },
     required=["budget_item_id", "percentage", "start_date", "end_date"],
     write=True,
 )
 def plan_employment(user, budget_item_id, percentage, start_date, end_date, staff_id=None, first_name="",
                     last_name="", category="researcher", status="planned", salary_category=None, start_level=None,
-                    level_start_date=None, statutory_health_insurance=True):
+                    level_start_date=None, statutory_health_insurance=True, has_bachelor=False):
     from staffing.forms import PlanEmploymentForm
     from staffing.models import SalaryCategory
     from staffing.utils import create_planned_employment
@@ -636,6 +639,8 @@ def plan_employment(user, budget_item_id, percentage, start_date, end_date, staf
     }
     if statutory_health_insurance:
         data["statutory_health_insurance"] = "on"
+    if has_bachelor:
+        data["has_bachelor"] = "on"
     form = PlanEmploymentForm(data)
     if not form.is_valid():
         raise ToolError("; ".join(f"{field}: {' '.join(errors)}" for field, errors in form.errors.items()))
@@ -670,12 +675,12 @@ def ignore_warning(user, key, comment):
 
 EMPLOYMENT_FIELDS = (
     "start_date", "end_date", "percentage", "status", "category", "salary_category", "start_level",
-    "level_start_date", "statutory_health_insurance",
+    "level_start_date", "statutory_health_insurance", "has_bachelor",
 )
 # Changes that alter the monthly costs and therefore trigger a new salary estimate.
 COST_FIELDS = {
     "start_date", "end_date", "percentage", "salary_category", "start_level", "level_start_date",
-    "statutory_health_insurance",
+    "statutory_health_insurance", "category", "has_bachelor",
 }
 
 
@@ -758,6 +763,7 @@ def _form_errors(form):
         "start_level": {"type": ["integer", "null"], "minimum": 1, "maximum": 6},
         "level_start_date": {"type": ["string", "null"], "description": "JJJJ-MM-TT"},
         "statutory_health_insurance": {"type": "boolean"},
+        "has_bachelor": {"type": "boolean", "description": "SHK mit Bachelor (Stundensatz)"},
         "clip_allocations": {"type": "boolean"},
         "dry_run": {"type": "boolean"},
     },
@@ -787,8 +793,9 @@ def update_employment(user, employment_id, clip_allocations=False, dry_run=False
                 raise ToolError(f"Entgeltgruppe „{value}“ nicht gefunden.")
             value = found.id
         data[field] = "" if value is None else value
-    if data.pop("statutory_health_insurance"):
-        data["statutory_health_insurance"] = "on"
+    for flag in ("statutory_health_insurance", "has_bachelor"):
+        if data.pop(flag):
+            data[flag] = "on"
     form = EmploymentForm(data, instance=employment)
     if not form.is_valid():
         raise ToolError(_form_errors(form))
@@ -837,7 +844,7 @@ def update_employment(user, employment_id, clip_allocations=False, dry_run=False
                 raise ToolError(f"Offene Umbuchung {rebooking.id} passt nicht mehr: " + " ".join(error.messages))
 
         estimated, missing = False, []
-        if cost_relevant and employment.salary_category_id and employment.start_level:
+        if cost_relevant and employment.has_salary_basis():
             missing = apply_tariff_salaries(employment, from_month=estimate_from_month(employment, sap_actuals))
             estimated = True
         employment.refresh_from_db()
@@ -852,7 +859,7 @@ def update_employment(user, employment_id, clip_allocations=False, dry_run=False
             "cost_changes": _cost_changes(before, _cost_snapshot(employment, _item_ids(before))),
         }
         if cost_relevant and not estimated:
-            result["notice"] = "Ohne Entgeltgruppe und Stufe wurden die Gehälter nicht neu geschätzt."
+            result["notice"] = "Ohne Entgeltgruppe und Stufe (oder SHK-Stundensatz) wurden die Gehälter nicht neu geschätzt."
         if dry_run:
             transaction.set_rollback(True)
     return result
@@ -1281,4 +1288,60 @@ def delete_staff_member(user, staff_id, dry_run=False):
     result = {"dry_run": bool(dry_run), "deleted": not dry_run, "staff_id": member.id, "name": str(member)}
     if not dry_run:
         member.delete()
+    return result
+
+
+@tool(
+    "set_monthly_salaries",
+    "Setzt geplante Monatsgehälter (Kosten inkl. Arbeitgeberanteil) einer Anstellung manuell, z. B. "
+    "{\"2027-01\": 1234.56}. Andere Monate bleiben unverändert; Monate mit SAP-Ist werden nicht überschrieben. "
+    "Teilmonate gelten für die Tage der Anstellung. dry_run=true prüft nur.",
+    {
+        "employment_id": {"type": "integer"},
+        "salaries": {"type": "object", "additionalProperties": {"type": "number"},
+                     "description": "{JJJJ-MM: Betrag}"},
+        "dry_run": {"type": "boolean"},
+    },
+    required=["employment_id", "salaries"],
+    write=True,
+)
+def set_monthly_salaries(user, employment_id, salaries, dry_run=False):
+    import re
+    from decimal import InvalidOperation
+
+    from django.db import transaction
+
+    from staffing.utils import get_sap_actuals_by_month, set_monthly_salaries as store
+
+    if not isinstance(salaries, dict) or not salaries:
+        raise ToolError("salaries: Bitte {JJJJ-MM: Betrag} angeben.")
+    amounts = {}
+    for month, value in salaries.items():
+        if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", str(month)):
+            raise ToolError(f"Monat im Format JJJJ-MM erwartet, erhalten: {month!r}")
+        try:
+            amount = Decimal(str(value)).quantize(Decimal("0.01"))
+        except (InvalidOperation, ValueError):
+            raise ToolError(f"{month}: Betrag erwartet, erhalten: {value!r}")
+        if amount < 0:
+            raise ToolError(f"{month}: Der Betrag darf nicht negativ sein.")
+        amounts[month] = amount
+    employment = _employment(employment_id)
+    sap_months = sorted(set(amounts) & set(get_sap_actuals_by_month(employment.stafffundingallocation_set.all())))
+    if sap_months:
+        raise ToolError("Für diese Monate gibt es SAP-Ist, sie werden nicht überschrieben: " + ", ".join(sap_months))
+
+    before = _cost_snapshot(employment)
+    with transaction.atomic():
+        try:
+            store(employment, amounts)
+        except ValueError as error:
+            raise ToolError(str(error))
+        result = {
+            "dry_run": bool(dry_run),
+            "employment": _employment_data(employment),
+            "cost_changes": _cost_changes(before, _cost_snapshot(employment, _item_ids(before))),
+        }
+        if dry_run:
+            transaction.set_rollback(True)
     return result

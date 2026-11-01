@@ -259,8 +259,6 @@ def apply_tariff_salaries(employment, from_month=None):
     """
     from datetime import date
 
-    from .models import EmploymentSalaries
-
     existing = get_salaries_by_month(employment)
     months = []  # (first_day, last_day, amount, is_rate)
     missing = []
@@ -287,6 +285,18 @@ def apply_tariff_salaries(employment, from_month=None):
         if amount:
             months.append((first_day, last_day, amount, is_rate))
 
+    _store_monthly_amounts(employment, months)
+    return missing
+
+
+def _store_monthly_amounts(employment, months):
+    """Replace the employment's salaries by [(first_day, last_day, amount, is_rate)].
+
+    Full months are monthly rates (equal consecutive months merged), other
+    entries exact amounts.
+    """
+    from .models import EmploymentSalaries
+
     records = []
     for first_day, last_day, amount, is_rate in months:
         previous = records[-1] if records else None
@@ -303,7 +313,30 @@ def apply_tariff_salaries(employment, from_month=None):
 
     employment.employmentsalaries_set.all().delete()
     EmploymentSalaries.objects.bulk_create(records)
-    return missing
+
+
+def set_monthly_salaries(employment, amounts):
+    """Set manual monthly amounts {"YYYY-MM": Decimal}; the other months keep their amounts.
+
+    Months must lie in the employment; a month only partly employed gets the
+    amount as exact amount for the employed days.
+    """
+    from datetime import date
+
+    existing = get_salaries_by_month(employment)
+    unknown = sorted(set(amounts) - set(existing))
+    if unknown:
+        raise ValueError("Monate außerhalb der Anstellung: " + ", ".join(unknown))
+    months = []
+    for month in _month_keys(employment.start_date, employment.end_date):
+        month_start = date.fromisoformat(f"{month}-01")
+        first_day = max(month_start, employment.start_date)
+        last_day = min(_month_end(month), employment.end_date)
+        is_full = first_day == month_start and last_day == _month_end(month)
+        amount = amounts.get(month, existing[month])
+        if amount:
+            months.append((first_day, last_day, amount, is_full))
+    _store_monthly_amounts(employment, months)
 
 
 def _previous_month_key(month):
@@ -556,7 +589,7 @@ def create_planned_employment(data):
     """Create an employment with one allocation and, with a pay grade, salaries from the TV-L tables.
 
     data: cleaned data of PlanEmploymentForm. Returns (employment, months without table
-    amount); the months are None if no pay grade was given (no salaries created).
+    amount); the months are None without pay grade or SHK hourly rate (no salaries created).
     """
     from django.db import transaction
 
@@ -577,6 +610,7 @@ def create_planned_employment(data):
             start_level=data["start_level"],
             level_start_date=data["level_start_date"] if data["start_level"] else None,
             statutory_health_insurance=data["statutory_health_insurance"],
+            has_bachelor=data.get("has_bachelor", False),
         )
         StaffFundingAllocation.objects.create(
             employment=employment,
@@ -585,5 +619,5 @@ def create_planned_employment(data):
             start_date=data["start_date"],
             end_date=data["end_date"],
         )
-        missing = apply_tariff_salaries(employment) if data["salary_category"] else None
+        missing = apply_tariff_salaries(employment) if employment.has_salary_basis() else None
     return employment, missing

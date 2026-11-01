@@ -11,6 +11,7 @@ from .models import (
     SalaryTableEntry,
     StaffFundingAllocation,
     StaffMember,
+    StudentHourlyRate,
 )
 
 class EmploymentInline(admin.StackedInline):
@@ -86,3 +87,9 @@ class RebookingAdmin(admin.ModelAdmin):
     list_filter = ("budget_item__project",)
     search_fields = ("allocation__employment__staff_member__first_name", "allocation__employment__staff_member__last_name")
     list_select_related = ("allocation__employment__staff_member", "budget_item__project")
+
+
+@admin.register(StudentHourlyRate)
+class StudentHourlyRateAdmin(admin.ModelAdmin):
+    list_display = ("__str__", "has_bachelor", "hourly_rate", "employer_share", "valid_from", "valid_until")
+    list_filter = ("has_bachelor",)

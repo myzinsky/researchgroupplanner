@@ -52,6 +52,10 @@ class PlanEmploymentForm(forms.Form):
         label="Gesetzlich krankenversichert", required=False, initial=True,
         help_text="Aus, wenn keine Arbeitgeberanteile zur Kranken- und Pflegeversicherung anfallen.",
     )
+    has_bachelor = forms.BooleanField(
+        label="SHK mit Bachelor", required=False,
+        help_text="Für Studentische Hilfskräfte ohne Entgeltgruppe: Gehalt aus dem SHK-Stundensatz.",
+    )
     level_start_date = forms.DateField(
         label="Stufenbeginn (fiktiv)",
         widget=DateInput(),
@@ -97,7 +101,7 @@ class EmploymentForm(forms.ModelForm):
         model = Employment
         fields = [
             "start_date", "end_date", "percentage", "category", "status", "salary_category", "start_level",
-            "level_start_date", "statutory_health_insurance",
+            "level_start_date", "statutory_health_insurance", "has_bachelor",
         ]
 
     def __init__(self, *args, **kwargs):

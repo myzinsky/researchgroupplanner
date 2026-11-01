@@ -259,7 +259,7 @@ employments, rebookings, warnings, SAP reconciliation, deliverables,
 statistics). Users with staff status additionally get write tools: create,
 complete and delete rebookings, plan, edit and delete employments, create, edit
 and delete allocations, edit and delete people, merge employments, create and edit budget
-items and ignore a warning. Editing an employment re-estimates
+items, set monthly salaries manually and ignore a warning. Editing an employment re-estimates
 the planned salaries from the TV-L tables while months already booked in SAP
 keep their amounts. The employment and allocation tools support `dry_run` to
 preview the result and the cost change per budget. Write calls are written to
@@ -341,6 +341,15 @@ positions, annual pool budgets, and a source-independent **Universal project**.
 Exactly one funding source must be selected for each allocation. Universal
 allocations appear in staff details and the main timeline but are not charged to
 a project's planning budget.
+
+### Student Assistant Salaries
+
+Student assistants (category *Studentische Hilfskraft*) without a pay grade are
+estimated from the hourly rates in the Django admin under **SHK-Stundensätze**:
+one rate with and one without a bachelor's degree, each with a validity period
+and an employer share in percent. The weekly hours follow from the employment
+percentage (40 hours = 100 %), the monthly hours are weekly hours × 4.348. Mark
+the employment as **SHK mit Bachelor** to use the bachelor rate.
 
 ## SAP WebGUI Integration
 

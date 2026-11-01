@@ -615,3 +615,85 @@ class McpEndpointTests(TestCase):
 
         result, _ = self.call("delete_staff_member", {"staff_id": mapped.id})
         self.assertTrue(result["isError"])
+
+    # --- SHK hourly rates and manual salaries ---
+
+    def add_student_rates(self):
+        from staffing.models import StudentHourlyRate
+
+        StudentHourlyRate.objects.create(has_bachelor=False, hourly_rate=Decimal("15.00"),
+                                         employer_share=Decimal("20"), valid_from=date(2026, 1, 1))
+        StudentHourlyRate.objects.create(has_bachelor=True, hourly_rate=Decimal("17.50"),
+                                         employer_share=Decimal("20"), valid_from=date(2026, 1, 1),
+                                         valid_until=date(2026, 12, 31))
+
+    def test_plan_student_employment_uses_hourly_rate(self):
+        self.add_student_rates()
+
+        result, data = self.call("plan_employment", {
+            "first_name": "Stu", "last_name": "Dent", "budget_item_id": self.item.id, "percentage": 25,
+            "start_date": "2026-11-01", "end_date": "2027-01-31", "category": "student", "has_bachelor": True,
+        }, token=self.staff_token)
+
+        self.assertFalse(result["isError"], data)
+        self.assertTrue(data["salaries_estimated"])
+        # 10 h/week × 4.348 × 17.50 € × 1.2; no bachelor rate for 2027.
+        self.assertEqual(data["months_without_table_amount"], ["2027-01"])
+        employment = Employment.objects.get(id=data["employment_id"])
+        self.assertTrue(employment.has_bachelor)
+        _, person = self.call("get_staff_member", {"staff_id": data["staff_id"]})
+        costs = person["employments"][0]["monthly_costs"]
+        self.assertEqual((costs["2026-11"]["planned"], costs["2027-01"]["planned"]), (913.08, 0.0))
+
+    def test_update_employment_switches_student_rate(self):
+        self.add_student_rates()
+
+        result, data = self.call("update_employment", {
+            "employment_id": self.employment.id, "category": "student", "percentage": 25,
+        }, token=self.staff_token)
+
+        self.assertFalse(result["isError"], data)
+        self.assertTrue(data["salaries_estimated"])
+        self.assertEqual(data["employment"]["monthly_costs"]["2026-03"]["planned"], 782.64)
+
+        result, data = self.call("update_employment", {"employment_id": self.employment.id, "has_bachelor": True},
+                                 token=self.staff_token)
+        self.assertEqual(data["employment"]["monthly_costs"]["2026-03"]["planned"], 913.08)
+
+    def test_set_monthly_salaries(self):
+        EmploymentSalaries.objects.create(employment=self.employment, salary=Decimal("5000.00"),
+                                          start_date=date(2026, 1, 1), end_date=date(2027, 12, 31))
+        arguments = {"employment_id": self.employment.id, "salaries": {"2026-06": 4200, "2026-07": "4300.5"}}
+
+        result, data = self.call("set_monthly_salaries", {**arguments, "dry_run": True}, token=self.staff_token)
+        self.assertFalse(result["isError"], data)
+        self.assertEqual(data["employment"]["monthly_costs"]["2026-06"]["planned"], 4200.0)
+        self.assertEqual(data["cost_changes"][0]["change"], -1499.5)
+        self.assertEqual(EmploymentSalaries.objects.filter(employment=self.employment).count(), 1)
+
+        result, data = self.call("set_monthly_salaries", arguments, token=self.staff_token)
+        self.assertFalse(result["isError"], data)
+        costs = data["employment"]["monthly_costs"]
+        self.assertEqual((costs["2026-05"]["planned"], costs["2026-06"]["planned"], costs["2026-07"]["planned"],
+                          costs["2026-08"]["planned"]), (5000.0, 4200.0, 4300.5, 5000.0))
+
+        for salaries, expected in (({"2025-12": 1}, "außerhalb"), ({"2026-13": 1}, "JJJJ-MM"),
+                                   ({"2026-06": -1}, "negativ"), ({"2026-06": "x"}, "Betrag"), ({}, "salaries")):
+            result, message = self.call("set_monthly_salaries", {"employment_id": self.employment.id,
+                                                                 "salaries": salaries}, token=self.staff_token)
+            self.assertTrue(result["isError"], salaries)
+            self.assertIn(expected, message, salaries)
+
+    def test_set_monthly_salaries_keeps_sap_months(self):
+        self.add_sap_actuals(["2026-01"])
+
+        result, message = self.call("set_monthly_salaries", {
+            "employment_id": self.employment.id, "salaries": {"2026-01": 100, "2026-02": 100},
+        }, token=self.staff_token)
+
+        self.assertTrue(result["isError"])
+        self.assertIn("2026-01", message)
+        self.assertFalse(EmploymentSalaries.objects.filter(employment=self.employment).exists())
+        result, _ = self.call("set_monthly_salaries", {"employment_id": self.employment.id,
+                                                       "salaries": {"2026-02": 100}})
+        self.assertTrue(result["isError"])

@@ -105,7 +105,7 @@ def details(request: HttpRequest, staff_id: int):
         employment.has_sap_actuals = bool(sap_actuals)
         employment.sap_mismatches = get_sap_salary_mismatches(employment.salaries_by_month, sap_actuals)
         employment.sap_correction_links = get_sap_correction_links(sap_actuals, employment.sap_mismatches)
-        employment.can_estimate = bool(employment.salary_category_id and employment.start_level)
+        employment.can_estimate = employment.has_salary_basis()
         if not employment.can_estimate:
             # Prefill pay grade and level for the estimate from the person's other employments.
             defaults = person_defaults or {}
@@ -302,7 +302,7 @@ def estimate_salaries(request: HttpRequest, employment_id: int):
             messages.error(request, "Gehälter nicht geschätzt: " + " ".join(error.messages))
             return redirect("staffing:details", staff_id=employment.staff_member_id)
         employment.save(update_fields=["salary_category", "start_level", "level_start_date"])
-    if not (employment.salary_category_id and employment.start_level):
+    if not employment.has_salary_basis():
         messages.error(request, "Für die Schätzung bitte Entgeltgruppe und Stufe bei der Anstellung hinterlegen.")
     else:
         with transaction.atomic():
