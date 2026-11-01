@@ -70,3 +70,13 @@ class DeliverableTests(TestCase):
 
         self.assertEqual([c.function for c in response.context["contacts"]], ["Koordination", "Projektträger"])
         self.assertContains(response, '<a href="mailto:zoe@example.org">zoe@example.org</a>')
+
+    def test_main_page_shows_project_on_its_last_day(self):
+        today = timezone.now().date()
+        Project.objects.create(acronym="LASTDAY", start_date=today - timedelta(days=100),
+                               end_date=today - timedelta(days=50), extension_planning_date=today,
+                               budget_total=Decimal("1000"))
+
+        response = self.client.get(reverse("main"))
+
+        self.assertIn("LASTDAY", [p.acronym for p in response.context["projects"]])

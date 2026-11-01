@@ -1164,8 +1164,8 @@ def annual_pools(request):
 def main(request):
     today = timezone.now().date()
     projects = Project.objects.filter(
-        Q(extension_planning_date__isnull=False, extension_planning_date__gt=today)
-        | Q(extension_planning_date__isnull=True, end_date__gt=today)
+        Q(extension_planning_date__isnull=False, extension_planning_date__gte=today)
+        | Q(extension_planning_date__isnull=True, end_date__gte=today)
     ).order_by('start_date')
     staff = StaffMember.objects.all()
 
