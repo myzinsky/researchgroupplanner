@@ -678,17 +678,30 @@ def _allocation_label(allocation):
     return f"{allocation.id}: {_allocation_source(allocation)} ({_day(allocation.start_date)} – {_day(end)})"
 
 
-def _allocation_costs(employment):
-    """{(budget item id, source): planned cost} of the employment's allocations."""
-    from projects.utils import calculate_salary_for_allocation
+def _cost_snapshot(employment, budget_item_ids=()):
+    """{(budget item id, source): planned cost}: the totals (all people) of the staff budget items the employment
+    is allocated to plus budget_item_ids, and the employment's own costs on other funding sources."""
+    from projects.models import StaffBudgetItem
+    from projects.utils import calculate_salary_for_allocation, get_staff_budget_item_used
 
     costs = {}
-    for allocation in employment.stafffundingallocation_set.select_related(
-        "employment", "budget_item__project", "landesstelle", "annual_pool_budget__annual_pool",
-    ):
-        key = (allocation.budget_item_id, _allocation_source(allocation))
+    item_ids = set(budget_item_ids)
+    allocations = employment.stafffundingallocation_set.select_related(
+        "employment", "landesstelle", "annual_pool_budget__annual_pool",
+    ) if employment is not None and employment.pk else []
+    for allocation in allocations:
+        if allocation.budget_item_id:
+            item_ids.add(allocation.budget_item_id)
+            continue
+        key = (None, _allocation_source(allocation))
         costs[key] = costs.get(key, Decimal("0.00")) + calculate_salary_for_allocation(allocation).salary_sum
+    for item in StaffBudgetItem.objects.filter(id__in=item_ids).select_related("project"):
+        costs[(item.id, f"{item.project.acronym} – {item.title}")] = get_staff_budget_item_used(item)
     return costs
+
+
+def _item_ids(costs):
+    return {budget_item_id for budget_item_id, _ in costs if budget_item_id}
 
 
 def _cost_changes(before, after):
@@ -780,7 +793,7 @@ def update_employment(user, employment_id, clip_allocations=False, dry_run=False
             + ". Mit clip_allocations=true werden sie gekürzt bzw. gelöscht."
         )
 
-    before = _allocation_costs(employment)
+    before = _cost_snapshot(employment)
     sap_actuals = get_sap_actuals_by_month(allocations)
     cost_relevant = bool(COST_FIELDS & set(form.changed_data))
     clipped, deleted = [], []
@@ -821,7 +834,7 @@ def update_employment(user, employment_id, clip_allocations=False, dry_run=False
             "salaries_kept_until": max(sap_actuals) if estimated and sap_actuals else None,
             "clipped_allocations": clipped,
             "deleted_allocations": deleted,
-            "cost_changes": _cost_changes(before, _allocation_costs(employment)),
+            "cost_changes": _cost_changes(before, _cost_snapshot(employment, _item_ids(before))),
         }
         if cost_relevant and not estimated:
             result["notice"] = "Ohne Entgeltgruppe und Stufe wurden die Gehälter nicht neu geschätzt."
@@ -861,15 +874,20 @@ def delete_employment(user, employment_id, delete_allocations=False, dry_run=Fal
     if allocations and not delete_allocations:
         raise ToolError("Die Anstellung hat Zuordnungen: " + "; ".join(_allocation_label(a) for a in allocations)
                         + ". Mit delete_allocations=true werden sie mitgelöscht.")
-    result = {
-        "dry_run": bool(dry_run),
-        "deleted": not dry_run,
-        "employment": _employment_data(employment),
-        "deleted_allocations": [_allocation_label(a) for a in allocations],
-        "cost_changes": _cost_changes(_allocation_costs(employment), {}),
-    }
-    if not dry_run:
+    from django.db import transaction
+
+    before = _cost_snapshot(employment)
+    with transaction.atomic():
+        result = {
+            "dry_run": bool(dry_run),
+            "deleted": not dry_run,
+            "employment": _employment_data(employment),
+            "deleted_allocations": [_allocation_label(a) for a in allocations],
+        }
         employment.delete()
+        result["cost_changes"] = _cost_changes(before, _cost_snapshot(None, _item_ids(before)))
+        if dry_run:
+            transaction.set_rollback(True)
     return result
 
 
@@ -928,13 +946,13 @@ def _save_allocation(allocation, changes, dry_run):
         raise ToolError(" ".join(problems))
 
     employment = allocation.employment
-    before = _allocation_costs(employment)
+    before = _cost_snapshot(employment, [allocation.budget_item_id] if allocation.budget_item_id else [])
     with transaction.atomic():
         allocation.save()
         result = {
             "dry_run": bool(dry_run),
             "allocation": _allocation_data(allocation),
-            "cost_changes": _cost_changes(before, _allocation_costs(employment)),
+            "cost_changes": _cost_changes(before, _cost_snapshot(employment, _item_ids(before))),
         }
         if dry_run:
             transaction.set_rollback(True)
@@ -1005,21 +1023,102 @@ def update_allocation(user, allocation_id, dry_run=False, **changes):
     write=True,
 )
 def delete_allocation(user, allocation_id, dry_run=False):
-    from projects.utils import calculate_salary_for_allocation
+    from django.db import transaction
 
     allocation = _allocation(allocation_id)
     _refuse_open_rebookings(allocation)
     employment = allocation.employment
-    before = _allocation_costs(employment)
-    after = dict(before)
-    key = (allocation.budget_item_id, _allocation_source(allocation))
-    after[key] = after[key] - calculate_salary_for_allocation(allocation).salary_sum
-    result = {
-        "dry_run": bool(dry_run),
-        "deleted": not dry_run,
-        "allocation": _allocation_data(allocation),
-        "cost_changes": _cost_changes(before, after),
-    }
-    if not dry_run:
+    before = _cost_snapshot(employment)
+    with transaction.atomic():
+        result = {"dry_run": bool(dry_run), "deleted": not dry_run, "allocation": _allocation_data(allocation)}
         allocation.delete()
+        result["cost_changes"] = _cost_changes(before, _cost_snapshot(employment, _item_ids(before)))
+        if dry_run:
+            transaction.set_rollback(True)
+    return result
+
+
+@tool(
+    "update_staff_member",
+    "Ändert die Stammdaten einer Person wie im Admin; nur übergebene Felder werden geändert. status: in_hire "
+    "(Einstellung), active (aktiv) oder alumni (ehemalig). dry_run=true prüft nur.",
+    {
+        "staff_id": {"type": "integer"},
+        "first_name": {"type": "string"},
+        "last_name": {"type": "string"},
+        "email": {"type": "string"},
+        "sap_business_partner": {"type": "string"},
+        "is_leadership": {"type": "boolean"},
+        "status": {"type": "string", "enum": ["in_hire", "active", "alumni"]},
+        "dry_run": {"type": "boolean"},
+    },
+    required=["staff_id"],
+    write=True,
+)
+def update_staff_member(user, staff_id, dry_run=False, **changes):
+    from django.forms.models import model_to_dict
+
+    from staffing.forms import StaffMemberForm
+
+    fields = StaffMemberForm._meta.fields
+    unknown = sorted(set(changes) - set(fields))
+    if unknown:
+        raise ToolError("Unbekannte Felder: " + ", ".join(unknown))
+    if not changes:
+        raise ToolError("Keine Änderungen angegeben.")
+    member = _staff_member(staff_id)
+    data = {**model_to_dict(member, fields), **{k: "" if v is None else v for k, v in changes.items()}}
+    if data.pop("is_leadership"):
+        data["is_leadership"] = "on"
+    form = StaffMemberForm(data, instance=member)
+    if not form.is_valid():
+        raise ToolError(_form_errors(form))
+    if not dry_run:
+        form.save()
+    return {
+        "dry_run": bool(dry_run),
+        "staff_id": member.id,
+        "changed": form.changed_data,
+        **{field: getattr(member, field) for field in fields},
+        "status_display": member.get_status_display(),
+    }
+
+
+@tool(
+    "merge_employments",
+    "Führt direkt aneinander anschließende Anstellungen einer Person zu einer zusammen (gleiche Regeln wie der "
+    "Hinweis „kann zusammengeführt werden“). Zuordnungen und Gehälter bleiben erhalten. dry_run=true prüft nur.",
+    {
+        "employment_ids": {"type": "array", "items": {"type": "integer"}, "minItems": 2},
+        "dry_run": {"type": "boolean"},
+    },
+    required=["employment_ids"],
+    write=True,
+)
+def merge_employments(user, employment_ids, dry_run=False):
+    from django.db import transaction
+
+    from staffing.utils import merge_employments as merge
+
+    if not isinstance(employment_ids, list) or len(set(employment_ids)) < 2:
+        raise ToolError("Bitte mindestens zwei verschiedene employment_ids angeben.")
+    employments = sorted((_employment(i) for i in set(employment_ids)), key=lambda e: e.start_date)
+    before = _cost_snapshot(employments[0])
+    for other in employments[1:]:
+        before.update(_cost_snapshot(other))
+    with transaction.atomic():
+        merged = employments[0]
+        for following in employments[1:]:
+            try:
+                merged = merge(merged, following)
+            except ValueError as error:
+                raise ToolError(f"Anstellungen {merged.id} und {following.id}: {error}")
+        merged.refresh_from_db()
+        result = {
+            "dry_run": bool(dry_run),
+            "employment": _employment_data(merged),
+            "cost_changes": _cost_changes(before, _cost_snapshot(merged, _item_ids(before))),
+        }
+        if dry_run:
+            transaction.set_rollback(True)
     return result

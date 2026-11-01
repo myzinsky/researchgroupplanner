@@ -258,7 +258,7 @@ All users with a token get read access (projects and budgets, staff and
 employments, rebookings, warnings, SAP reconciliation, deliverables,
 statistics). Users with staff status additionally get write tools: create,
 complete and delete rebookings, plan, edit and delete employments, create, edit
-and delete allocations and ignore a warning. Editing an employment re-estimates
+and delete allocations, edit people, merge employments and ignore a warning. Editing an employment re-estimates
 the planned salaries from the TV-L tables while months already booked in SAP
 keep their amounts. The employment and allocation tools support `dry_run` to
 preview the result and the cost change per budget. Write calls are written to

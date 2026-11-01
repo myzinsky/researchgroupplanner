@@ -416,3 +416,89 @@ class McpEndpointTests(TestCase):
         result, _ = self.call("delete_allocation", {"allocation_id": self.allocation.id})
         self.assertTrue(result["isError"])
         self.assertTrue(StaffFundingAllocation.objects.filter(id=self.allocation.id).exists())
+
+    # --- cost totals, update_staff_member, merge_employments ---
+
+    def test_cost_changes_report_budget_item_totals(self):
+        EmploymentSalaries.objects.create(employment=self.employment, salary=Decimal("5000.00"),
+                                          start_date=date(2026, 1, 1), end_date=date(2027, 12, 31))
+        # Someone else already planned on OTHR – WiMi.
+        colleague = Employment.objects.create(staff_member=StaffMember.objects.create(first_name="Max", last_name="M"),
+                                              start_date=date(2026, 1, 1), end_date=date(2026, 12, 31),
+                                              percentage=Decimal("100"))
+        EmploymentSalaries.objects.create(employment=colleague, salary=Decimal("1000.00"),
+                                          start_date=date(2026, 1, 1), end_date=date(2026, 12, 31))
+        StaffFundingAllocation.objects.create(employment=colleague, budget_item=self.other_item,
+                                              percentage=Decimal("100"), start_date=date(2026, 1, 1))
+        self.allocation.percentage = Decimal("50")
+        self.allocation.save()
+
+        _, data = self.call("create_allocation", {
+            "employment_id": self.employment.id, "budget_item_id": self.other_item.id, "percentage": 50,
+            "start_date": "2026-01-01", "end_date": None, "dry_run": True,
+        }, token=self.staff_token)
+        changes = {c["source"]: (c["before"], c["after"]) for c in data["cost_changes"]}
+        self.assertEqual(changes["OTHR – WiMi"], (12000.0, 72000.0))
+        self.assertEqual(changes["MCPX – WiMi"], (60000.0, 60000.0))
+
+        _, data = self.call("update_allocation", {"allocation_id": self.allocation.id,
+                                                  "budget_item_id": self.other_item.id, "dry_run": True},
+                            token=self.staff_token)
+        changes = {c["source"]: (c["before"], c["after"]) for c in data["cost_changes"]}
+        self.assertEqual(changes, {"MCPX – WiMi": (60000.0, 0.0), "OTHR – WiMi": (12000.0, 72000.0)})
+
+        _, data = self.call("delete_allocation", {"allocation_id": self.allocation.id, "dry_run": True},
+                            token=self.staff_token)
+        self.assertEqual(data["cost_changes"][0]["before"], 60000.0)
+
+    def test_update_staff_member(self):
+        result, data = self.call("update_staff_member", {"staff_id": self.member.id, "status": "alumni",
+                                                         "dry_run": True}, token=self.staff_token)
+        self.assertFalse(result["isError"], data)
+        self.assertEqual((data["status"], data["changed"]), ("alumni", ["status"]))
+        self.member.refresh_from_db()
+        self.assertEqual(self.member.status, "active")
+
+        result, data = self.call("update_staff_member", {"staff_id": self.member.id, "status": "alumni",
+                                                         "email": "erika@example.org"}, token=self.staff_token)
+        self.assertFalse(result["isError"], data)
+        self.member.refresh_from_db()
+        self.assertEqual((self.member.status, self.member.email), ("alumni", "erika@example.org"))
+        self.assertFalse(self.member.is_leadership)
+
+        for arguments, expected in (({"status": "former"}, "status"), ({"email": "nope"}, "email"),
+                                    ({"salary": 1}, "Unbekannte Felder"), ({}, "Keine Änderungen")):
+            result, message = self.call("update_staff_member", {"staff_id": self.member.id, **arguments},
+                                        token=self.staff_token)
+            self.assertTrue(result["isError"], arguments)
+            self.assertIn(expected, message)
+
+    def test_merge_employments(self):
+        following = Employment.objects.create(staff_member=self.member, start_date=date(2028, 1, 1),
+                                              end_date=date(2028, 6, 30), percentage=Decimal("100"))
+        StaffFundingAllocation.objects.create(employment=following, budget_item=self.item, percentage=Decimal("100"),
+                                              start_date=date(2028, 1, 1))
+        arguments = {"employment_ids": [following.id, self.employment.id]}
+
+        result, data = self.call("merge_employments", {**arguments, "dry_run": True}, token=self.staff_token)
+        self.assertFalse(result["isError"], data)
+        self.assertEqual((data["employment"]["start"], data["employment"]["end"]), ("2026-01-01", "2028-06-30"))
+        self.assertTrue(Employment.objects.filter(id=following.id).exists())
+
+        result, data = self.call("merge_employments", arguments, token=self.staff_token)
+        self.assertFalse(result["isError"], data)
+        self.assertFalse(Employment.objects.filter(id=following.id).exists())
+        self.assertEqual(len(data["employment"]["allocations"]), 2)
+
+    def test_merge_employments_refuses_non_mergeable(self):
+        gap = Employment.objects.create(staff_member=self.member, start_date=date(2028, 2, 1),
+                                        end_date=date(2028, 6, 30), percentage=Decimal("100"))
+
+        result, message = self.call("merge_employments", {"employment_ids": [self.employment.id, gap.id]},
+                                    token=self.staff_token)
+
+        self.assertTrue(result["isError"])
+        self.assertIn("nicht direkt", message)
+        self.assertTrue(Employment.objects.filter(id=gap.id).exists())
+        result, _ = self.call("merge_employments", {"employment_ids": [self.employment.id, gap.id]})
+        self.assertTrue(result["isError"])

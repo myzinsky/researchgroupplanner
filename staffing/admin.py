@@ -1,6 +1,7 @@
 from django.contrib import admin
 
 # Register your models here.
+from .forms import StaffMemberForm
 from .models import (
     Employment,
     EmploymentSalaries,
@@ -17,6 +18,7 @@ class EmploymentInline(admin.StackedInline):
     extra = 0
 
 class StaffMemberAdmin(admin.ModelAdmin):
+    form = StaffMemberForm
     list_display = (
         'get_full_name',
         'email',
@@ -24,14 +26,7 @@ class StaffMemberAdmin(admin.ModelAdmin):
         'is_leadership',
         'status',
     )
-    fields = (
-        'first_name',
-        'last_name',
-        'email',
-        'sap_business_partner',
-        'is_leadership',
-        'status',
-    )
+    fields = StaffMemberForm._meta.fields
     inlines = [EmploymentInline]
     
     def get_full_name(self, obj):

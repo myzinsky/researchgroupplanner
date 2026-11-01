@@ -571,6 +571,7 @@ def collect_warnings():
             staff_member.status in {"active", "in_hire"}
             and not staff_member.is_leadership
             and not active_employments
+            and not any(e.start_date > today for e in staff_member.employment_set.all())
         ):
             warnings_list.append({
                 "severity": "warning",

@@ -82,6 +82,14 @@ class PlanEmploymentForm(forms.Form):
         return data
 
 
+class StaffMemberForm(forms.ModelForm):
+    """Fields of a person editable in the admin."""
+
+    class Meta:
+        model = StaffMember
+        fields = ["first_name", "last_name", "email", "sap_business_partner", "is_leadership", "status"]
+
+
 class EmploymentForm(forms.ModelForm):
     """Edit an employment's period, extent, status and pay grade; same checks as PlanEmploymentForm."""
 
