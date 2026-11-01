@@ -483,6 +483,73 @@ def get_sap_reconciliation(user, acronym):
     return {"project": project.acronym, "funds": result}
 
 
+class _DryRun(Exception):
+    pass
+
+
+def _import_dirs():
+    from pathlib import Path
+
+    from django.conf import settings
+
+    return [Path(d).expanduser().resolve() for d in settings.SAP_IMPORT_DIRS]
+
+
+@tool(
+    "import_sap_export",
+    "Importiert SAP-Projektexporte (GM_E_4GBA, .xlsx) aus lokalen Dateien wie die Upload-Maske unter Ist-Stand. "
+    "Nur Dateien aus SAP_IMPORT_DIRS (Standard ~/Downloads). Ein Import ersetzt den vorherigen des Fonds. "
+    "dry_run: nur prüfen, nichts speichern.",
+    {
+        "paths": {"type": "array", "items": {"type": "string"}},
+        "dry_run": {"type": "boolean"},
+    },
+    required=["paths"],
+    write=True,
+)
+def import_sap_export(user, paths, dry_run=False):
+    from pathlib import Path
+
+    from django.conf import settings
+    from django.db import transaction
+
+    from sap_integration.gm_export import import_gm_export
+
+    if not settings.SAP_GM_IMPORT_ENABLED:
+        raise ToolError("Der Import von SAP-Projektexporten ist deaktiviert (SAP_GM_IMPORT_ENABLED).")
+    allowed = _import_dirs()
+    results = []
+    for raw in paths:
+        path = Path(raw).expanduser().resolve()
+        entry = {"file": str(path)}
+        results.append(entry)
+        if path.suffix.lower() != ".xlsx" or not any(path.is_relative_to(d) for d in allowed):
+            entry["error"] = "Nur .xlsx-Dateien aus " + ", ".join(str(d) for d in allowed) + " erlaubt."
+            continue
+        if not path.is_file():
+            entry["error"] = "Datei nicht gefunden."
+            continue
+        try:
+            with transaction.atomic():
+                sap_import = import_gm_export(path, file_name=path.name, user=user)
+                entry.update({
+                    "project": sap_import.fund.project.acronym if sap_import.fund.project else None,
+                    "fund": sap_import.fund.fund_number,
+                    "positions": sap_import.positions.count(),
+                    "first_booking": _day(sap_import.first_booking),
+                    "last_booking": _day(sap_import.last_booking),
+                })
+                if dry_run:
+                    raise _DryRun
+                entry["import_id"] = sap_import.id
+        except _DryRun:
+            pass
+        except Exception as error:
+            entry["error"] = str(error) if isinstance(error, ValueError) else (
+                f"Datei konnte nicht als SAP-Export gelesen werden: {error}")
+    return {"dry_run": dry_run, "results": results}
+
+
 @tool(
     "list_deliverables",
     "Deliverables aller Projekte nach Deadline. days_ahead: nur die nächsten N Tage; include_past: auch vergangene.",

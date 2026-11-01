@@ -470,6 +470,10 @@ download, the fiscal-year pages and the daily sync job.
    The project is detected from the PSP-Element. A new import replaces the
    previous one for that project. Dates of birth in payroll texts are dropped.
 
+   MCP clients (staff tokens) can use the tool `import_sap_export` with local
+   file paths; only files below `SAP_IMPORT_DIRS` (colon-separated, default
+   `~/Downloads`) are accepted, `dry_run` validates without saving.
+
 The import groups all bookings into positions: each staff contract
 (Mittelreservierung, with person, contract periods and payroll per month),
 each trip, each purchase (requisition → order → invoice) and each funder

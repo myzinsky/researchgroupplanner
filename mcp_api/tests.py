@@ -867,3 +867,54 @@ class McpEndpointTests(TestCase):
         result, _ = self.call("set_monthly_salaries", {"employment_id": self.employment.id,
                                                        "salaries": {"2026-02": 100}})
         self.assertTrue(result["isError"])
+
+
+@override_settings(SAP_ENABLED=False, SAP_GM_IMPORT_ENABLED=True)
+class ImportSapExportToolTests(TestCase):
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+
+        from sap_integration.test_gm_export import PSP, write_export
+
+        staff = get_user_model().objects.create_user("staff", password="x", is_staff=True)
+        api_token = ApiToken(user=staff, name="Test")
+        self.token = api_token.set_new_key()
+        api_token.save()
+        project = Project.objects.create(acronym="GMX", start_date=date(2025, 1, 1), end_date=date(2027, 12, 31),
+                                         budget_total=Decimal("100000"))
+        self.fund = SAPFund.objects.create(fund_number=PSP, project=project)
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.dir = Path(directory.name).resolve()
+        self.path = write_export(self.dir / "GMX_EXPORT.xlsx")
+
+    def call(self, arguments, dirs=None):
+        with self.settings(SAP_IMPORT_DIRS=dirs or [str(self.dir)]):
+            response = self.client.post("/mcp/", json.dumps({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "import_sap_export", "arguments": arguments},
+            }), content_type="application/json", HTTP_AUTHORIZATION=f"Bearer {self.token}")
+        result = response.json()["result"]
+        self.assertFalse(result["isError"], result)
+        return json.loads(result["content"][0]["text"])
+
+    def test_import_and_dry_run(self):
+        data = self.call({"paths": [str(self.path)], "dry_run": True})
+        self.assertEqual(data["results"][0]["project"], "GMX")
+        self.assertGreater(data["results"][0]["positions"], 0)
+        self.assertFalse(SAPImport.objects.exists())
+
+        data = self.call({"paths": [str(self.path)]})
+        self.assertEqual(SAPImport.objects.get().id, data["results"][0]["import_id"])
+        self.assertEqual(SAPImport.objects.get().file_name, "GMX_EXPORT.xlsx")
+
+    def test_rejects_paths_outside_import_dirs_and_continues(self):
+        broken = self.dir / "broken.xlsx"
+        broken.write_bytes(b"no excel")
+        data = self.call({"paths": [str(self.path), str(broken)]}, dirs=["/nonexistent"])
+        self.assertTrue(all("erlaubt" in r["error"] for r in data["results"]))
+
+        data = self.call({"paths": [str(broken), str(self.path)]})
+        self.assertIn("error", data["results"][0])
+        self.assertIn("import_id", data["results"][1])
