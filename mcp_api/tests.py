@@ -728,6 +728,20 @@ class McpEndpointTests(TestCase):
         self.assertTrue(result["isError"])
         self.assertIn("SAP-Position", message)
 
+    def test_list_warnings_filters(self):
+        _, everything = self.call("list_warnings")
+        titles = [w["title"] for w in everything["warnings"]]
+        self.assertTrue(titles)
+        severity = everything["warnings"][0]["severity"]
+
+        _, data = self.call("list_warnings", {"severity": [severity]})
+        self.assertTrue(data["warnings"])
+        self.assertTrue(all(w["severity"] == severity for w in data["warnings"]))
+        _, data = self.call("list_warnings", {"search": "mcpx"})
+        self.assertTrue(all("mcpx" in (w["title"] + " ".join(w["details"])).casefold() for w in data["warnings"]))
+        _, data = self.call("list_warnings", {"search": "gibt-es-nicht"})
+        self.assertEqual(data["warnings"], [])
+
     def test_update_project(self):
         arguments = {"acronym": "mcpx", "start_date": "2025-10-01", "extension_until": "2029-03-31",
                      "no_overhead": True}

@@ -407,13 +407,28 @@ def list_rebookings(user):
 @tool(
     "list_warnings",
     "Konsistenz-Warnungen der Planung (wie die Seite Warnungen) mit Schlüssel zum Ignorieren. "
-    "include_ignored: auch ignorierte mit Begründung.",
-    {"include_ignored": {"type": "boolean"}},
+    "include_ignored: auch ignorierte mit Begründung. severity filtert (z. B. [\"danger\", \"warning\"]), "
+    "search filtert Titel und Details (Groß-/Kleinschreibung egal, z. B. Projekt oder Person).",
+    {
+        "include_ignored": {"type": "boolean"},
+        "severity": {"type": "array", "items": {"type": "string", "enum": ["danger", "warning", "info", "success"]}},
+        "search": {"type": "string"},
+    },
 )
-def list_warnings(user, include_ignored=False):
+def list_warnings(user, include_ignored=False, severity=None, search=None):
     from controlling.views import collect_warnings
 
     active, ignored = collect_warnings()
+
+    def matches(warning):
+        if severity and warning["severity"] not in severity:
+            return False
+        if search:
+            text = " ".join([warning["title"], *(warning.get("details") or [warning.get("detail") or ""])])
+            return search.casefold() in text.casefold()
+        return True
+
+    active, ignored = [w for w in active if matches(w)], [w for w in ignored if matches(w)]
 
     def data(warning):
         entry = {
