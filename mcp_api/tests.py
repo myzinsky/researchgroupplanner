@@ -621,6 +621,7 @@ class McpEndpointTests(TestCase):
     def add_student_rates(self):
         from staffing.models import StudentHourlyRate
 
+        StudentHourlyRate.objects.all().delete()  # rates from the data migration
         StudentHourlyRate.objects.create(has_bachelor=False, hourly_rate=Decimal("15.00"),
                                          employer_share=Decimal("20"), valid_from=date(2026, 1, 1))
         StudentHourlyRate.objects.create(has_bachelor=True, hourly_rate=Decimal("17.50"),
