@@ -1246,3 +1246,39 @@ def update_budget_item(user, budget_item_id, kind="staff", title=None, amount=No
     if dry_run:
         item.refresh_from_db()
     return result
+
+
+@tool(
+    "delete_staff_member",
+    "Löscht eine Person. Nur ohne Anstellungen, Zuordnungen und SAP-Daten (Namenszuordnungen, "
+    "Mittelreservierungen). dry_run=true prüft nur.",
+    {"staff_id": {"type": "integer"}, "dry_run": {"type": "boolean"}},
+    required=["staff_id"],
+    write=True,
+)
+def delete_staff_member(user, staff_id, dry_run=False):
+    from staffing.models import StaffFundingAllocation
+    from staffing.utils import staff_reservations
+
+    member = _staff_member(staff_id)
+    problems = []
+    employments = list(member.employment_set.values_list("id", flat=True))
+    if employments:
+        problems.append("Anstellungen (IDs " + ", ".join(map(str, employments)) + ")")
+    allocations = list(StaffFundingAllocation.objects.filter(employment__staff_member=member).values_list("id", flat=True))
+    if allocations:
+        problems.append("Zuordnungen (IDs " + ", ".join(map(str, allocations)) + ")")
+    mappings = list(member.sap_name_mappings.values_list("sap_name", flat=True))
+    if mappings:
+        problems.append("SAP-Namenszuordnungen (" + ", ".join(mappings) + ")")
+    reservations = staff_reservations(member)
+    if reservations:
+        problems.append("SAP-Mittelreservierungen (" + ", ".join(
+            f"{r['project'].acronym} {r['position'].reference}" for r in reservations
+        ) + ")")
+    if problems:
+        raise ToolError(f"{member} wird nicht gelöscht, es gibt noch: " + "; ".join(problems) + ".")
+    result = {"dry_run": bool(dry_run), "deleted": not dry_run, "staff_id": member.id, "name": str(member)}
+    if not dry_run:
+        member.delete()
+    return result

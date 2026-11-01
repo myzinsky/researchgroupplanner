@@ -578,3 +578,40 @@ class McpEndpointTests(TestCase):
         self.assertTrue(result["isError"])
         self.item.refresh_from_db()
         self.assertEqual(self.item.amount, Decimal("80000"))
+
+    # --- delete_staff_member ---
+
+    def test_delete_staff_member(self):
+        result, message = self.call("delete_staff_member", {"staff_id": self.member.id}, token=self.staff_token)
+        self.assertTrue(result["isError"])
+        self.assertIn("Anstellungen", message)
+        self.assertIn("Zuordnungen", message)
+
+        lone = StaffMember.objects.create(first_name="Ohne", last_name="Alles")
+        result, data = self.call("delete_staff_member", {"staff_id": lone.id, "dry_run": True}, token=self.staff_token)
+        self.assertFalse(result["isError"], data)
+        self.assertTrue(StaffMember.objects.filter(id=lone.id).exists())
+
+        result, data = self.call("delete_staff_member", {"staff_id": lone.id}, token=self.staff_token)
+        self.assertFalse(result["isError"], data)
+        self.assertFalse(StaffMember.objects.filter(id=lone.id).exists())
+
+    def test_delete_staff_member_refuses_sap_data(self):
+        from sap_integration.models import SAPPersonMapping
+
+        mapped = StaffMember.objects.create(first_name="Map", last_name="Ped")
+        SAPPersonMapping.objects.create(sap_name="Ped, Map", staff_member=mapped)
+        named = StaffMember.objects.create(first_name="Ronja", last_name="Reserviert")
+        fund = SAPFund.objects.create(fund_number="1/070000002", project=self.project)
+        sap_import = SAPImport.objects.create(fund=fund, file_name="export.xlsx")
+        SAPPosition.objects.create(sap_import=sap_import, reference="4000777", kind="staff", cost_type="812000",
+                                   person_name="Reserviert, Ronja", commitment=Decimal("1000"))
+
+        for member, expected in ((mapped, "SAP-Namenszuordnungen"), (named, "SAP-Mittelreservierungen")):
+            result, message = self.call("delete_staff_member", {"staff_id": member.id}, token=self.staff_token)
+            self.assertTrue(result["isError"], member)
+            self.assertIn(expected, message)
+            self.assertTrue(StaffMember.objects.filter(id=member.id).exists())
+
+        result, _ = self.call("delete_staff_member", {"staff_id": mapped.id})
+        self.assertTrue(result["isError"])
