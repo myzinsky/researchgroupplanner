@@ -561,8 +561,8 @@ def complete_rebooking(rebooking):
         target.percentage = rebooking.percentage
         target.start_date, target.end_date = start, end_value(end)
         target.is_rebooking = True
-        if saved:
-            target.sap_reference = ""
+        # SAP keeps the Mittelbindung (same reference) when a contract moves to another fund.
+        target.sap_reference = template.sap_reference
         target.full_clean()
         target.save()
 
