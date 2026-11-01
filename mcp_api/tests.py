@@ -742,6 +742,33 @@ class McpEndpointTests(TestCase):
         _, data = self.call("list_warnings", {"search": "gibt-es-nicht"})
         self.assertEqual(data["warnings"], [])
 
+    def test_list_funding_gaps(self):
+        from staffing.models import StaffFundingAllocation as Allocation
+
+        self.allocation.end_date = date(2026, 6, 30)
+        self.allocation.save()
+        Allocation.objects.create(employment=self.employment, budget_item=self.other_item, percentage=Decimal("50"),
+                                  start_date=date(2026, 7, 1), end_date=date(2026, 12, 31))
+
+        _, data = self.call("list_funding_gaps", {"from_date": "2026-05-01", "until_date": "2027-12-31"})
+
+        gaps = [(g["start"], g["end"], g["unfunded_percentage"]) for g in data["gaps"]]
+        self.assertEqual(gaps, [("2026-07-01", "2026-12-31", 50.0), ("2027-01-01", "2027-12-31", 100.0)])
+        self.assertEqual([e["end"] for e in data["employments_ending"]], ["2027-12-31"])
+        result, message = self.call("list_funding_gaps", {"from_date": "2027-01-01", "until_date": "2026-01-01"})
+        self.assertTrue(result["isError"])
+
+    def test_budget_capacity(self):
+        EmploymentSalaries.objects.create(employment=self.employment, salary=Decimal("5000.00"),
+                                          start_date=date(2026, 1, 1), end_date=date(2027, 12, 31))
+
+        _, data = self.call("budget_capacity", {"acronym": "MCPX", "from_date": "2028-01-01", "monthly_cost": 5000})
+
+        item = data["budget_items"][0]
+        self.assertEqual((item["planned"], item["remaining"], item["months_left"]), (120000.0, -40000.0, 12))
+        self.assertEqual(item["planned_by_year"], {"2026": 60000.0, "2027": 60000.0})
+        self.assertEqual(item["person_months_fundable"], -8.0)
+
     def test_update_project(self):
         arguments = {"acronym": "mcpx", "start_date": "2025-10-01", "extension_until": "2029-03-31",
                      "no_overhead": True}

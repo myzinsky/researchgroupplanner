@@ -256,7 +256,7 @@ The planner offers an [MCP](https://modelcontextprotocol.io) endpoint at `/mcp/`
 
 All users with a token get read access (projects and budgets, staff and
 employments, rebookings, warnings, SAP reconciliation, deliverables,
-statistics). Users with staff status additionally get write tools: create,
+statistics, funding gaps per person and free capacity per staff budget). Users with staff status additionally get write tools: create,
 complete and delete rebookings, plan, edit and delete employments, create, edit
 and delete allocations, edit and delete people, merge employments, edit project master data (period,
 extension, grant total, no overhead), create and edit budget

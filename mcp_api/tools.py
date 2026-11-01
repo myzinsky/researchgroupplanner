@@ -1492,3 +1492,132 @@ def update_project(user, acronym, dry_run=False, **changes):
         if dry_run:
             transaction.set_rollback(True)
     return result
+
+
+
+def _optional_day(value, field, default):
+    if value in (None, ""):
+        return default
+    try:
+        return date.fromisoformat(value)
+    except (TypeError, ValueError):
+        raise ToolError(f"{field}: Datum im Format JJJJ-MM-TT erwartet, erhalten: {value!r}")
+
+
+@tool(
+    "list_funding_gaps",
+    "Finanzierungslücken im Zeitraum (Standard: heute bis +18 Monate): Zeiträume, in denen eine Anstellung nicht "
+    "voll durch Zuordnungen gedeckt ist (unfunded_percentage), sowie Anstellungen, die im Zeitraum enden, ohne dass "
+    "eine weitere anschließt. Ehemalige (Alumni) werden ausgelassen.",
+    {
+        "from_date": {"type": "string", "description": "JJJJ-MM-TT"},
+        "until_date": {"type": "string", "description": "JJJJ-MM-TT"},
+    },
+)
+def list_funding_gaps(user, from_date=None, until_date=None):
+    from dateutil.relativedelta import relativedelta
+
+    from staffing.models import Employment
+
+    start = _optional_day(from_date, "from_date", timezone.now().date())
+    end = _optional_day(until_date, "until_date", start + relativedelta(months=18))
+    if end < start:
+        raise ToolError("until_date darf nicht vor from_date liegen.")
+
+    employments = Employment.objects.filter(start_date__lte=end, end_date__gte=start).exclude(
+        staff_member__status="alumni").select_related("staff_member").prefetch_related(
+        "stafffundingallocation_set").order_by("staff_member__last_name", "start_date")
+    gaps, endings = [], []
+    for employment in employments:
+        member = employment.staff_member
+        window_start, window_end = max(start, employment.start_date), min(end, employment.end_date)
+        allocations = list(employment.stafffundingallocation_set.all())
+        # Day boundaries where the covered percentage can change.
+        bounds = {window_start, window_end + timedelta(days=1)}
+        for a in allocations:
+            a_end = a.end_date or employment.end_date
+            for day in (a.start_date, a_end + timedelta(days=1)):
+                if window_start < day <= window_end:
+                    bounds.add(day)
+        bounds = sorted(bounds)
+        current = None
+        for seg_start, next_start in zip(bounds, bounds[1:]):
+            covered = sum((Decimal(a.percentage) for a in allocations
+                           if a.start_date <= seg_start <= (a.end_date or employment.end_date)), Decimal("0"))
+            missing = Decimal(employment.percentage) - covered
+            seg_end = next_start - timedelta(days=1)
+            if missing > 0:
+                if current and current["unfunded_percentage"] == float(missing) and current["_end"] + timedelta(days=1) == seg_start:
+                    current["_end"] = seg_end
+                else:
+                    current = {"staff_id": member.id, "person": str(member), "employment_id": employment.id,
+                               "employment_status": employment.get_status_display(), "_start": seg_start,
+                               "_end": seg_end, "unfunded_percentage": float(missing)}
+                    gaps.append(current)
+            else:
+                current = None
+        if start <= employment.end_date <= end:
+            follow = Employment.objects.filter(staff_member=member, start_date__gt=employment.start_date,
+                                               start_date__lte=employment.end_date + timedelta(days=1)).exists()
+            if not follow:
+                endings.append({"staff_id": member.id, "person": str(member), "employment_id": employment.id,
+                                "end": _day(employment.end_date), "percentage": float(employment.percentage),
+                                "employment_status": employment.get_status_display()})
+    for gap in gaps:
+        gap["start"], gap["end"] = _day(gap.pop("_start")), _day(gap.pop("_end"))
+    return {"from": _day(start), "until": _day(end), "gaps": gaps, "employments_ending": endings}
+
+
+@tool(
+    "budget_capacity",
+    "Freie Mittel je Personalbudget: Budget, geplante Kosten je Jahr, Rest und Restlaufzeit in Monaten ab "
+    "from_date (Standard heute). Mit monthly_cost (z. B. Monatskosten einer E13-Stelle) zusätzlich, wie viele "
+    "Personenmonate der Rest noch finanziert. Optional nur ein Projekt (acronym).",
+    {
+        "acronym": {"type": "string"},
+        "from_date": {"type": "string", "description": "JJJJ-MM-TT"},
+        "monthly_cost": {"type": "number", "description": "Monatskosten einer Vollzeitstelle zur Umrechnung"},
+    },
+)
+def budget_capacity(user, acronym=None, from_date=None, monthly_cost=None):
+    from dateutil.relativedelta import relativedelta
+
+    from projects.models import StaffBudgetItem
+    from projects.utils import calculate_salary_for_allocation
+
+    start = _optional_day(from_date, "from_date", timezone.now().date())
+    items = StaffBudgetItem.objects.select_related("project").order_by("project__start_date", "project__acronym", "id")
+    if acronym:
+        items = items.filter(project=_project(acronym))
+    result = []
+    for item in items:
+        project = item.project
+        project_end = project.get_effective_end_date()
+        if project_end < start and not acronym:
+            continue
+        by_year, planned = {}, Decimal("0")
+        for allocation in item.stafffundingallocation_set.select_related("employment"):
+            for month, amount in calculate_salary_for_allocation(allocation).months.items():
+                by_year[month[:4]] = by_year.get(month[:4], Decimal("0")) + Decimal(amount)
+                planned += Decimal(amount)
+        remaining = Decimal(item.amount) - planned
+        delta = relativedelta(project_end + timedelta(days=1), max(start, project.start_date))
+        months_left = max(0, delta.years * 12 + delta.months + (1 if delta.days else 0)) if project_end >= start else 0
+        entry = {
+            "budget_item_id": item.id,
+            "project": project.acronym,
+            "title": item.title,
+            "project_end": _day(project_end),
+            "amount": _money(item.amount),
+            "planned": _money(planned),
+            "planned_by_year": {year: _money(value) for year, value in sorted(by_year.items())},
+            "remaining": _money(remaining),
+            "months_left": months_left,
+        }
+        if monthly_cost:
+            entry["person_months_fundable"] = round(float(remaining) / float(monthly_cost), 1)
+            entry["fte_until_end"] = round(float(remaining) / float(monthly_cost) / months_left, 2) if months_left else None
+        result.append(entry)
+    if acronym is None and not result:
+        raise ToolError("Keine Personalbudgets gefunden.")
+    return {"from": _day(start), "budget_items": result}
