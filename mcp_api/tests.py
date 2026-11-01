@@ -322,3 +322,97 @@ class McpEndpointTests(TestCase):
         self.assertTrue(result["isError"])
         self.employment.refresh_from_db()
         self.assertEqual(self.employment.percentage, Decimal("100"))
+
+    # --- create_allocation / update_allocation / delete_allocation ---
+
+    def test_create_allocation(self):
+        self.allocation.percentage = Decimal("60")
+        self.allocation.save()
+        arguments = {"employment_id": self.employment.id, "budget_item_id": self.other_item.id, "percentage": 40,
+                     "start_date": "2027-01-01", "end_date": "2027-06-30", "sap_reference": "4000999"}
+
+        result, data = self.call("create_allocation", {**arguments, "dry_run": True}, token=self.staff_token)
+        self.assertFalse(result["isError"], data)
+        self.assertEqual(StaffFundingAllocation.objects.count(), 1)
+
+        result, data = self.call("create_allocation", arguments, token=self.staff_token)
+        self.assertFalse(result["isError"], data)
+        created = StaffFundingAllocation.objects.get(id=data["allocation"]["allocation_id"])
+        self.assertEqual((created.budget_item, created.sap_reference), (self.other_item, "4000999"))
+
+    def test_create_allocation_rules(self):
+        base = {"employment_id": self.employment.id, "budget_item_id": self.other_item.id, "percentage": 10,
+                "start_date": "2027-01-01", "end_date": None}
+        self.other.end_date = date(2027, 6, 30)
+        self.other.save()
+        cases = [
+            ({}, "Projektlaufzeit"),
+            ({"end_date": "2027-03-31"}, "100 %"),
+            ({"start_date": "2025-12-01", "end_date": "2026-01-31"}, "Anstellung"),
+            ({"end_date": "2026-12-31"}, "Enddatum"),
+            ({"percentage": 120}, "percentage"),
+            ({"budget_item_id": 999999}, "Personalbudget"),
+        ]
+        for overrides, expected in cases:
+            result, message = self.call("create_allocation", {**base, **overrides}, token=self.staff_token)
+            self.assertTrue(result["isError"], overrides)
+            self.assertIn(expected, message, overrides)
+        self.assertEqual(StaffFundingAllocation.objects.count(), 1)
+
+    def test_update_allocation(self):
+        EmploymentSalaries.objects.create(employment=self.employment, salary=Decimal("5000.00"),
+                                          start_date=date(2026, 1, 1), end_date=date(2027, 12, 31))
+        arguments = {"allocation_id": self.allocation.id, "budget_item_id": self.other_item.id,
+                     "sap_reference": "4000123"}
+
+        result, data = self.call("update_allocation", {**arguments, "dry_run": True}, token=self.staff_token)
+        self.assertFalse(result["isError"], data)
+        self.assertEqual({c["source"]: c["change"] for c in data["cost_changes"]},
+                         {"MCPX – WiMi": -120000.0, "OTHR – WiMi": 120000.0})
+        self.allocation.refresh_from_db()
+        self.assertEqual(self.allocation.budget_item, self.item)
+
+        result, data = self.call("update_allocation", arguments, token=self.staff_token)
+        self.assertFalse(result["isError"], data)
+        self.allocation.refresh_from_db()
+        self.assertEqual((self.allocation.budget_item, self.allocation.sap_reference), (self.other_item, "4000123"))
+
+        result, message = self.call("update_allocation", {"allocation_id": self.allocation.id, "percentage": 50,
+                                                          "salary": 1}, token=self.staff_token)
+        self.assertIn("Unbekannte Felder", message)
+        result, message = self.call("update_allocation", {"allocation_id": self.allocation.id,
+                                                          "end_date": "2028-06-30"}, token=self.staff_token)
+        self.assertIn("Anstellung", message)
+
+    def test_allocation_tools_refuse_open_rebookings(self):
+        Rebooking.objects.create(allocation=self.allocation, budget_item=self.other_item,
+                                 percentage=Decimal("50"), start_date=date(2026, 7, 1))
+
+        for name, arguments in (("update_allocation", {"percentage": 50}), ("delete_allocation", {})):
+            result, message = self.call(name, {"allocation_id": self.allocation.id, **arguments},
+                                        token=self.staff_token)
+            self.assertTrue(result["isError"], name)
+            self.assertIn("Umbuchungen", message)
+        self.assertTrue(StaffFundingAllocation.objects.filter(id=self.allocation.id).exists())
+
+    def test_delete_allocation(self):
+        EmploymentSalaries.objects.create(employment=self.employment, salary=Decimal("5000.00"),
+                                          start_date=date(2026, 1, 1), end_date=date(2027, 12, 31))
+
+        result, data = self.call("delete_allocation", {"allocation_id": self.allocation.id, "dry_run": True},
+                                 token=self.staff_token)
+        self.assertFalse(result["isError"], data)
+        self.assertEqual(data["cost_changes"][0]["change"], -120000.0)
+        self.assertTrue(StaffFundingAllocation.objects.filter(id=self.allocation.id).exists())
+
+        result, data = self.call("delete_allocation", {"allocation_id": self.allocation.id}, token=self.staff_token)
+        self.assertFalse(result["isError"], data)
+        self.assertFalse(StaffFundingAllocation.objects.filter(id=self.allocation.id).exists())
+
+    def test_allocation_tools_require_staff(self):
+        tools = {t["name"] for t in self.rpc("tools/list").json()["result"]["tools"]}
+        self.assertFalse({"create_allocation", "update_allocation", "delete_allocation"} & tools)
+
+        result, _ = self.call("delete_allocation", {"allocation_id": self.allocation.id})
+        self.assertTrue(result["isError"])
+        self.assertTrue(StaffFundingAllocation.objects.filter(id=self.allocation.id).exists())

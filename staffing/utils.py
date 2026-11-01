@@ -518,6 +518,40 @@ def staff_reservations(staff_member):
     return sorted(result, key=lambda r: (min((s for s, _ in r["periods"]), default=r["position"].first_date or date.max)))
 
 
+def allocation_conflicts(allocation):
+    """Messages why an allocation does not fit: outside its employment or project, or over-allocating the employment."""
+    employment = allocation.employment
+    start, end = allocation.start_date, allocation.end_date or employment.end_date
+    problems = []
+    if start < employment.start_date or end > employment.end_date:
+        problems.append(
+            f"Die Zuordnung muss in der Anstellung liegen ({employment.start_date:%d.%m.%Y} – {employment.end_date:%d.%m.%Y})."
+        )
+    if allocation.budget_item_id:
+        project = allocation.budget_item.project
+        project_end = project.get_effective_end_date()
+        if start < project.start_date or end > project_end:
+            problems.append(
+                f"Die Zuordnung muss in der Projektlaufzeit von {project.acronym} liegen "
+                f"({project.start_date:%d.%m.%Y} – {project_end:%d.%m.%Y})."
+            )
+    others = [
+        (other.start_date, other.end_date or employment.end_date, other.percentage)
+        for other in employment.stafffundingallocation_set.exclude(pk=allocation.pk)
+    ]
+    others = [(s, e, p) for s, e, p in others if s <= end and start <= e]
+    # The sum is largest at the start of one of the overlapping periods.
+    for day in sorted({start} | {s for s, _, _ in others if s > start}):
+        total = allocation.percentage + sum((p for s, e, p in others if s <= day <= e), Decimal("0"))
+        if total > employment.percentage:
+            problems.append(
+                f"Ab {day:%d.%m.%Y} wären {total.normalize():f} % zugeordnet, die Anstellung hat nur "
+                f"{employment.percentage.normalize():f} %."
+            )
+            break
+    return problems
+
+
 def create_planned_employment(data):
     """Create an employment with one allocation and, with a pay grade, salaries from the TV-L tables.
 

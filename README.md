@@ -257,11 +257,12 @@ The planner offers an [MCP](https://modelcontextprotocol.io) endpoint at `/mcp/`
 All users with a token get read access (projects and budgets, staff and
 employments, rebookings, warnings, SAP reconciliation, deliverables,
 statistics). Users with staff status additionally get write tools: create,
-complete and delete rebookings, plan, edit and delete employments and ignore a
-warning. Editing an employment re-estimates the planned salaries from the TV-L
-tables while months already booked in SAP keep their amounts; both employment
-tools support `dry_run` to preview the result and the cost change per budget. Write
-calls are written to the `mcp_api` logger (level INFO). Serve the endpoint over HTTPS only, since the token is sent
+complete and delete rebookings, plan, edit and delete employments, create, edit
+and delete allocations and ignore a warning. Editing an employment re-estimates
+the planned salaries from the TV-L tables while months already booked in SAP
+keep their amounts. The employment and allocation tools support `dry_run` to
+preview the result and the cost change per budget. Write calls are written to
+the `mcp_api` logger (level INFO). Serve the endpoint over HTTPS only, since the token is sent
 with every request.
 
 ## Deployment-Specific Features

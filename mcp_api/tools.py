@@ -131,6 +131,19 @@ def _staff_member(staff_id=None, name=None):
     return candidates[0]
 
 
+def _allocation_data(allocation):
+    return {
+        "allocation_id": allocation.id,
+        "source": _allocation_source(allocation),
+        "budget_item_id": allocation.budget_item_id,
+        "percentage": _money(allocation.percentage),
+        "start": _day(allocation.start_date),
+        "end": _day(allocation.end_date or allocation.employment.end_date),
+        "sap_reference": allocation.sap_reference,
+        "open_rebookings": [_rebooking_data(r) for r in allocation.rebookings.select_related("budget_item__project")],
+    }
+
+
 def _employment_data(employment):
     """An employment as listed by get_staff_member: allocations and planned vs. SAP monthly costs."""
     from staffing.utils import get_salaries_by_month, get_sap_actuals_by_month
@@ -151,18 +164,7 @@ def _employment_data(employment):
         "start_level": employment.start_level,
         "level_start_date": _day(employment.level_start_date),
         "statutory_health_insurance": employment.statutory_health_insurance,
-        "allocations": [
-            {
-                "allocation_id": a.id,
-                "source": _allocation_source(a),
-                "percentage": _money(a.percentage),
-                "start": _day(a.start_date),
-                "end": _day(a.end_date or employment.end_date),
-                "sap_reference": a.sap_reference,
-                "open_rebookings": [_rebooking_data(r) for r in a.rebookings.select_related("budget_item__project")],
-            }
-            for a in allocations
-        ],
+        "allocations": [_allocation_data(a) for a in allocations],
         "monthly_costs": {
             month: {
                 "planned": _money(amount),
@@ -868,4 +870,156 @@ def delete_employment(user, employment_id, delete_allocations=False, dry_run=Fal
     }
     if not dry_run:
         employment.delete()
+    return result
+
+
+ALLOCATION_FIELDS = ("budget_item_id", "percentage", "start_date", "end_date", "sap_reference")
+
+
+def _allocation(allocation_id):
+    from staffing.models import StaffFundingAllocation
+
+    allocation = StaffFundingAllocation.objects.select_related(
+        "employment__staff_member", "budget_item__project", "landesstelle", "annual_pool_budget__annual_pool",
+    ).filter(id=allocation_id).first()
+    if allocation is None:
+        raise ToolError(f"Keine Zuordnung mit ID {allocation_id}.")
+    return allocation
+
+
+def _refuse_open_rebookings(allocation):
+    ids = list(allocation.rebookings.values_list("id", flat=True))
+    if ids:
+        raise ToolError("Die Zuordnung hat offene Umbuchungen (IDs " + ", ".join(map(str, ids))
+                        + "); bitte zuerst abschließen oder löschen.")
+
+
+def _save_allocation(allocation, changes, dry_run):
+    """Validate (AllocationForm, model rules, allocation_conflicts) and save; returns the tool result."""
+    from django.db import transaction
+    from django.forms.models import model_to_dict
+
+    from projects.models import StaffBudgetItem
+    from staffing.forms import AllocationForm
+    from staffing.utils import allocation_conflicts
+
+    if "budget_item_id" in changes:
+        budget_item = StaffBudgetItem.objects.select_related("project").filter(id=changes["budget_item_id"]).first()
+        if budget_item is None:
+            raise ToolError(f"Kein Personalbudget mit ID {changes['budget_item_id']}.")
+        # Moving to a project budget replaces any other funding source.
+        allocation.budget_item = budget_item
+        allocation.landesstelle = allocation.annual_pool_budget = None
+        allocation.is_universal = False
+    data = {key: "" if value is None else value
+            for key, value in model_to_dict(allocation, ["budget_item", "percentage", "start_date", "end_date"]).items()}
+    for field in ("percentage", "start_date", "end_date"):
+        if field in changes:
+            data[field] = "" if changes[field] is None else changes[field]
+    form = AllocationForm(data, instance=allocation)
+    if not form.is_valid():
+        raise ToolError(_form_errors(form))
+    if "sap_reference" in changes:
+        allocation.sap_reference = (changes["sap_reference"] or "").strip()
+        if len(allocation.sap_reference) > 50:
+            raise ToolError("sap_reference: höchstens 50 Zeichen.")
+    problems = allocation_conflicts(allocation)
+    if problems:
+        raise ToolError(" ".join(problems))
+
+    employment = allocation.employment
+    before = _allocation_costs(employment)
+    with transaction.atomic():
+        allocation.save()
+        result = {
+            "dry_run": bool(dry_run),
+            "allocation": _allocation_data(allocation),
+            "cost_changes": _cost_changes(before, _allocation_costs(employment)),
+        }
+        if dry_run:
+            transaction.set_rollback(True)
+    return result
+
+
+@tool(
+    "create_allocation",
+    "Ordnet eine Anstellung (employment_id) einem Personalbudget (budget_item_id aus list_budget_items) zu. Die "
+    "Zuordnung muss in Anstellung und Projektlaufzeit liegen, die Summe der Zuordnungen darf den Umfang der "
+    "Anstellung nicht übersteigen. dry_run=true prüft nur und zeigt die Kostenänderung je Budget.",
+    {
+        "employment_id": {"type": "integer"},
+        "budget_item_id": {"type": "integer"},
+        "percentage": {"type": "number"},
+        "start_date": {"type": "string", "description": "JJJJ-MM-TT"},
+        "end_date": {"type": ["string", "null"], "description": "JJJJ-MM-TT, null = Ende der Anstellung"},
+        "sap_reference": {"type": "string", "description": "Referenzbelegnummer der SAP-Mittelreservierung"},
+        "dry_run": {"type": "boolean"},
+    },
+    required=["employment_id", "budget_item_id", "percentage", "start_date", "end_date"],
+    write=True,
+)
+def create_allocation(user, employment_id, budget_item_id, percentage, start_date, end_date, sap_reference="",
+                      dry_run=False):
+    from staffing.models import StaffFundingAllocation
+
+    allocation = StaffFundingAllocation(employment=_employment(employment_id))
+    return _save_allocation(allocation, {
+        "budget_item_id": budget_item_id, "percentage": percentage, "start_date": start_date, "end_date": end_date,
+        "sap_reference": sap_reference,
+    }, dry_run)
+
+
+@tool(
+    "update_allocation",
+    "Ändert eine Zuordnung (allocation_id aus get_staff_member); nur übergebene Felder werden geändert. "
+    "budget_item_id verschiebt sie auf ein anderes Personalbudget, end_date=null bedeutet Ende der Anstellung. "
+    "Nicht bei offenen Umbuchungen. dry_run=true prüft nur und zeigt die Kostenänderung je Budget.",
+    {
+        "allocation_id": {"type": "integer"},
+        "budget_item_id": {"type": "integer"},
+        "percentage": {"type": "number"},
+        "start_date": {"type": "string", "description": "JJJJ-MM-TT"},
+        "end_date": {"type": ["string", "null"], "description": "JJJJ-MM-TT"},
+        "sap_reference": {"type": "string"},
+        "dry_run": {"type": "boolean"},
+    },
+    required=["allocation_id"],
+    write=True,
+)
+def update_allocation(user, allocation_id, dry_run=False, **changes):
+    unknown = sorted(set(changes) - set(ALLOCATION_FIELDS))
+    if unknown:
+        raise ToolError("Unbekannte Felder: " + ", ".join(unknown))
+    if not changes:
+        raise ToolError("Keine Änderungen angegeben.")
+    allocation = _allocation(allocation_id)
+    _refuse_open_rebookings(allocation)
+    return _save_allocation(allocation, changes, dry_run)
+
+
+@tool(
+    "delete_allocation",
+    "Löscht eine Zuordnung (nicht bei offenen Umbuchungen). dry_run=true zeigt nur die Kostenänderung je Budget.",
+    {"allocation_id": {"type": "integer"}, "dry_run": {"type": "boolean"}},
+    required=["allocation_id"],
+    write=True,
+)
+def delete_allocation(user, allocation_id, dry_run=False):
+    from projects.utils import calculate_salary_for_allocation
+
+    allocation = _allocation(allocation_id)
+    _refuse_open_rebookings(allocation)
+    employment = allocation.employment
+    before = _allocation_costs(employment)
+    after = dict(before)
+    key = (allocation.budget_item_id, _allocation_source(allocation))
+    after[key] = after[key] - calculate_salary_for_allocation(allocation).salary_sum
+    result = {
+        "dry_run": bool(dry_run),
+        "deleted": not dry_run,
+        "allocation": _allocation_data(allocation),
+        "cost_changes": _cost_changes(before, after),
+    }
+    if not dry_run:
+        allocation.delete()
     return result
