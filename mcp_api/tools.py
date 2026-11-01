@@ -749,7 +749,8 @@ def _form_errors(form):
     "update_employment",
     "Ändert eine Anstellung (employment_id aus get_staff_member); nur übergebene Felder werden geändert, null leert "
     "ein Feld. Bei Änderungen an Zeitraum, Umfang, Entgeltgruppe, Stufe oder Versicherung werden die geplanten "
-    "Gehälter wie bei plan_employment neu geschätzt, Monate mit SAP-Ist bleiben unverändert. Zuordnungen außerhalb "
+    "Gehälter wie bei plan_employment neu geschätzt (reestimate=true erzwingt das), Monate mit SAP-Ist bleiben "
+    "unverändert (dafür apply_sap_salaries). Zuordnungen außerhalb "
     "des neuen Zeitraums sind ein Fehler, mit clip_allocations=true werden sie gekürzt bzw. gelöscht. "
     "dry_run=true prüft nur und zeigt das Ergebnis samt Kostenänderung je Budget, ohne zu speichern.",
     {
@@ -765,12 +766,13 @@ def _form_errors(form):
         "statutory_health_insurance": {"type": "boolean"},
         "has_bachelor": {"type": "boolean", "description": "SHK mit Bachelor (Stundensatz)"},
         "clip_allocations": {"type": "boolean"},
+        "reestimate": {"type": "boolean", "description": "Gehälter auch ohne Feldänderung neu schätzen"},
         "dry_run": {"type": "boolean"},
     },
     required=["employment_id"],
     write=True,
 )
-def update_employment(user, employment_id, clip_allocations=False, dry_run=False, **changes):
+def update_employment(user, employment_id, clip_allocations=False, reestimate=False, dry_run=False, **changes):
     from django.db import transaction
     from django.forms.models import model_to_dict
 
@@ -781,7 +783,7 @@ def update_employment(user, employment_id, clip_allocations=False, dry_run=False
     unknown = sorted(set(changes) - set(EMPLOYMENT_FIELDS))
     if unknown:
         raise ToolError("Unbekannte Felder: " + ", ".join(unknown))
-    if not changes:
+    if not changes and not reestimate:
         raise ToolError("Keine Änderungen angegeben.")
     employment = _employment(employment_id)
 
@@ -817,7 +819,7 @@ def update_employment(user, employment_id, clip_allocations=False, dry_run=False
 
     before = _cost_snapshot(employment)
     sap_actuals = get_sap_actuals_by_month(allocations)
-    cost_relevant = bool(COST_FIELDS & set(form.changed_data))
+    cost_relevant = reestimate or bool(COST_FIELDS & set(form.changed_data))
     clipped, deleted = [], []
     with transaction.atomic():
         employment = form.save()
@@ -1339,6 +1341,62 @@ def set_monthly_salaries(user, employment_id, salaries, dry_run=False):
             raise ToolError(str(error))
         result = {
             "dry_run": bool(dry_run),
+            "employment": _employment_data(employment),
+            "cost_changes": _cost_changes(before, _cost_snapshot(employment, _item_ids(before))),
+        }
+        if dry_run:
+            transaction.set_rollback(True)
+    return result
+
+
+@tool(
+    "apply_sap_salaries",
+    "Übernimmt die SAP-Ist-Gehälter der verknüpften SAP-Positionen (sap_reference der Zuordnungen) als geplante "
+    "Monatsgehälter der Anstellung, wie „Gehälter übernehmen“ auf der SAP-Positionsseite. Andere Monate bleiben "
+    "unverändert. dry_run=true prüft nur.",
+    {
+        "employment_id": {"type": "integer"},
+        "dry_run": {"type": "boolean"},
+    },
+    required=["employment_id"],
+    write=True,
+)
+def apply_sap_salaries(user, employment_id, dry_run=False):
+    from django.db import transaction
+
+    from sap_integration.crosscheck import references
+    from sap_integration.models import SAPPosition
+    from sap_integration.transform import apply_monthly_salaries
+
+    employment = _employment(employment_id)
+    allocations = [a for a in employment.stafffundingallocation_set.all() if references(a.sap_reference)]
+    if not allocations:
+        raise ToolError("Keine Zuordnung der Anstellung ist mit einer SAP-Position verknüpft.")
+    refs = {ref for a in allocations for ref in references(a.sap_reference)}
+    latest, positions = {}, []
+    for position in SAPPosition.objects.filter(reference__in=refs).select_related("sap_import__fund").order_by(
+            "-sap_import__imported_at"):
+        fund_id = position.sap_import.fund_id
+        latest.setdefault(fund_id, position.sap_import_id)
+        if latest[fund_id] == position.sap_import_id and position.monthly_actuals:
+            positions.append(position)
+    if not positions:
+        raise ToolError("Zu den verknüpften SAP-Positionen gibt es keine Ist-Gehälter.")
+
+    before = _cost_snapshot(employment)
+    applied = set()
+    with transaction.atomic():
+        for position in positions:
+            costs = {month: Decimal(amount) for month, amount in position.monthly_actuals.items()}
+            for allocation in allocations:
+                if position.reference in references(allocation.sap_reference):
+                    allocation.refresh_from_db()
+                    skipped = set(apply_monthly_salaries(allocation, costs))
+                    applied |= {m for m, c in costs.items() if c > 0} - skipped
+        employment.refresh_from_db()
+        result = {
+            "dry_run": bool(dry_run),
+            "months_applied": sorted(applied),
             "employment": _employment_data(employment),
             "cost_changes": _cost_changes(before, _cost_snapshot(employment, _item_ids(before))),
         }

@@ -259,9 +259,10 @@ employments, rebookings, warnings, SAP reconciliation, deliverables,
 statistics). Users with staff status additionally get write tools: create,
 complete and delete rebookings, plan, edit and delete employments, create, edit
 and delete allocations, edit and delete people, merge employments, create and edit budget
-items, set monthly salaries manually and ignore a warning. Editing an employment re-estimates
-the planned salaries from the TV-L tables while months already booked in SAP
-keep their amounts. The employment and allocation tools support `dry_run` to
+items, set monthly salaries manually, take over SAP actual salaries and ignore a warning.
+Editing an employment re-estimates the planned salaries from the TV-L tables
+(`reestimate=true` forces it without other changes) while months already booked
+in SAP keep their amounts; `apply_sap_salaries` sets those months to the SAP actuals. The employment and allocation tools support `dry_run` to
 preview the result and the cost change per budget. Write calls are written to
 the `mcp_api` logger (level INFO). Serve the endpoint over HTTPS only, since the token is sent
 with every request.

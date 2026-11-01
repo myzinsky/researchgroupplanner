@@ -685,6 +685,49 @@ class McpEndpointTests(TestCase):
             self.assertTrue(result["isError"], salaries)
             self.assertIn(expected, message, salaries)
 
+    def test_update_employment_reestimate_without_changes(self):
+        result, message = self.call("update_employment", {"employment_id": self.employment.id},
+                                    token=self.staff_token)
+        self.assertTrue(result["isError"])
+        self.add_student_rates()
+        self.employment.category = "student"
+        self.employment.percentage = Decimal("25")
+        self.employment.save()
+
+        result, data = self.call("update_employment", {"employment_id": self.employment.id, "reestimate": True},
+                                 token=self.staff_token)
+
+        self.assertFalse(result["isError"], data)
+        self.assertTrue(data["salaries_estimated"])
+        self.assertEqual(data["employment"]["monthly_costs"]["2026-03"]["planned"], 782.64)
+
+    def test_apply_sap_salaries(self):
+        EmploymentSalaries.objects.create(employment=self.employment, salary=Decimal("0.00"),
+                                          start_date=date(2026, 1, 1), end_date=date(2027, 12, 31))
+        self.add_sap_actuals(["2026-01", "2026-02"])
+
+        result, data = self.call("apply_sap_salaries", {"employment_id": self.employment.id, "dry_run": True},
+                                 token=self.staff_token)
+        self.assertFalse(result["isError"], data)
+        self.assertEqual(data["months_applied"], ["2026-01", "2026-02"])
+        self.assertEqual(data["cost_changes"][0]["change"], 10000.0)
+        self.assertEqual(self.call("get_staff_member", {"staff_id": self.member.id})[1]
+                         ["employments"][0]["monthly_costs"]["2026-01"]["planned"], 0.0)
+
+        result, data = self.call("apply_sap_salaries", {"employment_id": self.employment.id}, token=self.staff_token)
+        costs = data["employment"]["monthly_costs"]
+        self.assertEqual((costs["2026-01"]["planned"], costs["2026-02"]["planned"], costs["2026-03"]["planned"]),
+                         (5000.0, 5000.0, 0.0))
+
+        result, _ = self.call("apply_sap_salaries", {"employment_id": self.employment.id})
+        self.assertTrue(result["isError"])
+
+    def test_apply_sap_salaries_without_link(self):
+        result, message = self.call("apply_sap_salaries", {"employment_id": self.employment.id},
+                                    token=self.staff_token)
+        self.assertTrue(result["isError"])
+        self.assertIn("SAP-Position", message)
+
     def test_set_monthly_salaries_keeps_sap_months(self):
         self.add_sap_actuals(["2026-01"])
 
