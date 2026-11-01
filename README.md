@@ -259,7 +259,8 @@ employments, rebookings, warnings, SAP reconciliation, deliverables,
 statistics, funding gaps per person and free capacity per staff budget). Users with staff status additionally get write tools: create,
 complete and delete rebookings, plan, edit and delete employments, create, edit
 and delete allocations, edit and delete people, merge employments, edit project master data (period,
-extension, grant total, no overhead), create and edit budget
+extension, grant total, no overhead), add and delete deliverables, milestones and
+reporting periods, create and edit budget
 items, set monthly salaries manually, take over SAP actual salaries, plan non-staff
 costs (create, edit and delete transactions, also from an SAP position), map SAP
 cost types to budgets and ignore a warning.

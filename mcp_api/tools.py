@@ -297,11 +297,12 @@ def get_project(user, acronym):
         ],
         "open_rebookings": [_rebooking_data(r) for r in rebookings],
         "deliverables": [
-            {"title": d.title, "deadline": _day(d.deadline), "lead": d.is_lead} for d in project.deliverables.all()
+            {"deliverable_id": d.id, "title": d.title, "deadline": _day(d.deadline), "lead": d.is_lead}
+            for d in project.deliverables.all()
         ],
-        "milestones": [{"title": m.title, "date": _day(m.date)} for m in project.milestones.all()],
+        "milestones": [{"milestone_id": m.id, "title": m.title, "date": _day(m.date)} for m in project.milestones.all()],
         "reporting_periods": [
-            {"title": r.title, "start": _day(r.start_date), "end": _day(r.end_date)}
+            {"reporting_period_id": r.id, "title": r.title, "start": _day(r.start_date), "end": _day(r.end_date)}
             for r in project.reporting_periods.all()
         ],
         "links": [{"title": link.title, "url": link.url} for link in project.links.order_by("title")],
@@ -1952,3 +1953,119 @@ def create_transaction_from_sap(user, psp_element, sap_reference, budget_item_id
         if dry_run:
             transaction.set_rollback(True)
     return result
+
+
+
+# --- Deliverables, milestones, reporting periods ---
+
+PROJECT_ITEM_KINDS = {
+    "deliverable": ("ProjectDeliverable", {"title": "title", "deadline": "deadline", "is_lead": "is_lead"}),
+    "milestone": ("ProjectMilestone", {"title": "title", "date": "date"}),
+    "reporting_period": ("ReportingPeriod", {"title": "title", "start": "start_date", "end": "end_date"}),
+}
+
+
+def _project_item_model(kind):
+    from projects import models
+
+    if kind not in PROJECT_ITEM_KINDS:
+        raise ToolError("kind muss deliverable, milestone oder reporting_period sein.")
+    name, fields = PROJECT_ITEM_KINDS[kind]
+    return getattr(models, name), fields
+
+
+def _project_item_data(kind, obj):
+    _, fields = PROJECT_ITEM_KINDS[kind]
+    data = {f"{kind}_id": obj.id}
+    for key, attribute in fields.items():
+        value = getattr(obj, attribute)
+        data[key] = _day(value) if hasattr(value, "isoformat") else value
+    return data
+
+
+@tool(
+    "add_project_items",
+    "Legt Deliverables, Meilensteine oder Berichtszeiträume eines Projekts an (kind). items: Liste von Objekten; "
+    "deliverable: {title, deadline, is_lead}, milestone: {title, date}, reporting_period: {title, start, end} "
+    "(Daten JJJJ-MM-TT). Alle oder keiner werden angelegt. dry_run=true prüft nur.",
+    {
+        "acronym": {"type": "string"},
+        "kind": {"type": "string", "enum": ["deliverable", "milestone", "reporting_period"]},
+        "items": {"type": "array", "items": {"type": "object"}},
+        "dry_run": {"type": "boolean"},
+    },
+    required=["acronym", "kind", "items"],
+    write=True,
+)
+def add_project_items(user, acronym, kind, items, dry_run=False):
+    from django.db import transaction
+
+    model, fields = _project_item_model(kind)
+    project = _project(acronym)
+    if not isinstance(items, list) or not items:
+        raise ToolError("items: Bitte eine nicht leere Liste angeben.")
+    created = []
+    with transaction.atomic():
+        for index, item in enumerate(items, 1):
+            unknown = sorted(set(item) - set(fields))
+            if unknown:
+                raise ToolError(f"Eintrag {index}: unbekannte Felder " + ", ".join(unknown))
+            obj = model(project=project)
+            for key, attribute in fields.items():
+                if key not in item:
+                    if key in ("is_lead",):
+                        continue
+                    if key == "title" and kind == "reporting_period":
+                        continue
+                    raise ToolError(f"Eintrag {index}: {key} fehlt.")
+                value = item[key]
+                if key in ("deadline", "date", "start", "end"):
+                    value = _optional_day(value, key, None)
+                    if value is None:
+                        raise ToolError(f"Eintrag {index}: {key} darf nicht leer sein.")
+                elif key == "is_lead":
+                    value = bool(value)
+                setattr(obj, attribute, value)
+            try:
+                obj.full_clean()
+            except ValidationError as error:
+                raise ToolError(f"Eintrag {index}: " + " ".join(error.messages))
+            if kind == "reporting_period" and obj.end_date < obj.start_date:
+                raise ToolError(f"Eintrag {index}: Ende vor Beginn.")
+            obj.save()
+            created.append(_project_item_data(kind, obj))
+        result = {"dry_run": bool(dry_run), "project": project.acronym, "kind": kind, "created": created}
+        if dry_run:
+            transaction.set_rollback(True)
+    return result
+
+
+@tool(
+    "delete_project_items",
+    "Löscht Deliverables, Meilensteine oder Berichtszeiträume eines Projekts per ID (aus get_project). "
+    "dry_run=true prüft nur.",
+    {
+        "acronym": {"type": "string"},
+        "kind": {"type": "string", "enum": ["deliverable", "milestone", "reporting_period"]},
+        "ids": {"type": "array", "items": {"type": "integer"}},
+        "dry_run": {"type": "boolean"},
+    },
+    required=["acronym", "kind", "ids"],
+    write=True,
+)
+def delete_project_items(user, acronym, kind, ids, dry_run=False):
+    from django.db import transaction
+
+    model, _ = _project_item_model(kind)
+    project = _project(acronym)
+    objects = list(model.objects.filter(project=project, pk__in=ids))
+    missing = sorted(set(ids) - {o.id for o in objects})
+    if missing:
+        raise ToolError(f"Nicht im Projekt {project.acronym} gefunden: " + ", ".join(map(str, missing)))
+    deleted = [_project_item_data(kind, o) for o in objects]
+    with transaction.atomic():
+        for obj in objects:
+            obj.delete()
+        if dry_run:
+            transaction.set_rollback(True)
+    return {"dry_run": bool(dry_run), "project": project.acronym, "kind": kind, "deleted": deleted}

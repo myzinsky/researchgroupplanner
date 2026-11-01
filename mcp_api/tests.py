@@ -94,7 +94,8 @@ class McpEndpointTests(TestCase):
         self.assertIn("MCPX", [p["acronym"] for p in projects["projects"]])
         _, project = self.call("get_project", {"acronym": "mcpx"})
         self.assertEqual(project["staff_allocations"][0]["allocation_id"], self.allocation.id)
-        self.assertEqual(project["deliverables"], [{"title": "D1", "deadline": "2027-06-30", "lead": True}])
+        self.assertEqual([{k: v for k, v in d.items() if k != "deliverable_id"} for d in project["deliverables"]],
+                         [{"title": "D1", "deadline": "2027-06-30", "lead": True}])
         _, person = self.call("get_staff_member", {"name": "Erika"})
         self.assertEqual(person["employments"][0]["allocations"][0]["allocation_id"], self.allocation.id)
         for name in ("list_staff", "list_budget_items", "list_rebookings", "list_warnings", "list_deliverables",
@@ -828,6 +829,50 @@ class McpEndpointTests(TestCase):
         _, data = self.call("map_sap_cost_type", {"psp_element": "1/070000001", "cost_type": "7431",
                                                   "budget_item_id": None}, token=self.staff_token)
         self.assertTrue(data["removed"])
+
+    def test_add_and_delete_project_items(self):
+        from projects.models import ProjectDeliverable, ProjectMilestone, ReportingPeriod
+
+        items = [{"title": "D1.3 Roadmap", "deadline": "2026-11-30", "is_lead": True},
+                 {"title": "D1.1 Handbook", "deadline": "2026-08-31"}]
+        result, data = self.call("add_project_items", {"acronym": "MCPX", "kind": "deliverable", "items": items,
+                                                       "dry_run": True}, token=self.staff_token)
+        self.assertFalse(result["isError"], data)
+        self.assertEqual(len(data["created"]), 2)
+        self.assertEqual(ProjectDeliverable.objects.filter(project=self.project).count(), 1)
+
+        _, data = self.call("add_project_items", {"acronym": "MCPX", "kind": "deliverable", "items": items},
+                            token=self.staff_token)
+        self.assertEqual([d["is_lead"] for d in data["created"]], [True, False])
+        _, data = self.call("add_project_items", {"acronym": "MCPX", "kind": "milestone",
+                                                  "items": [{"title": "MS1", "date": "2026-06-30"}]},
+                            token=self.staff_token)
+        milestone_id = data["created"][0]["milestone_id"]
+        _, data = self.call("add_project_items", {"acronym": "MCPX", "kind": "reporting_period",
+                                                  "items": [{"title": "RP1", "start": "2026-01-01",
+                                                             "end": "2027-06-30"}]}, token=self.staff_token)
+        self.assertEqual(ReportingPeriod.objects.filter(project=self.project).count(), 1)
+
+        _, project = self.call("get_project", {"acronym": "MCPX"})
+        self.assertEqual(project["milestones"][0]["milestone_id"], milestone_id)
+
+        for items, expected in (([{"title": "X"}], "date fehlt"), ([{"title": "X", "date": "x"}], "JJJJ-MM-TT"),
+                                ([{"title": "X", "date": "2026-01-01", "foo": 1}], "unbekannte")):
+            result, message = self.call("add_project_items", {"acronym": "MCPX", "kind": "milestone",
+                                                              "items": items}, token=self.staff_token)
+            self.assertTrue(result["isError"], items)
+            self.assertIn(expected, message)
+
+        _, data = self.call("delete_project_items", {"acronym": "MCPX", "kind": "milestone", "ids": [milestone_id]},
+                            token=self.staff_token)
+        self.assertEqual(len(data["deleted"]), 1)
+        self.assertFalse(ProjectMilestone.objects.filter(project=self.project).exists())
+        result, message = self.call("delete_project_items", {"acronym": "OTHR", "kind": "deliverable",
+                                                             "ids": [data["deleted"][0]["milestone_id"]]},
+                                    token=self.staff_token)
+        self.assertTrue(result["isError"])
+        result, _ = self.call("add_project_items", {"acronym": "MCPX", "kind": "milestone", "items": items})
+        self.assertTrue(result["isError"])
 
     def test_update_project(self):
         arguments = {"acronym": "mcpx", "start_date": "2025-10-01", "extension_until": "2029-03-31",
