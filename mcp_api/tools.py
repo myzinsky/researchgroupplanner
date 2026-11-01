@@ -144,6 +144,15 @@ def _allocation_data(allocation):
     }
 
 
+def _budget_item_data(item, kind):
+    data = {"budget_item_id": item.id, "kind": kind, "project": item.project.acronym, "amount": _money(item.amount)}
+    if kind != "overhead":
+        data["title"] = item.title
+    if kind == "staff":
+        data["allowed_categories"] = sorted(e.eligible_employment for e in item.staffbudgetitemeligibility_set.all())
+    return data
+
+
 def _employment_data(employment):
     """An employment as listed by get_staff_member: allocations and planned vs. SAP monthly costs."""
     from staffing.utils import get_salaries_by_month, get_sap_actuals_by_month
@@ -303,19 +312,25 @@ def get_project(user, acronym):
 
 @tool(
     "list_budget_items",
-    "Personalbudgets (IDs für Umbuchungen und Anstellungsplanung), optional nur eines Projekts.",
+    "Budgetposten: Personal (IDs für Umbuchungen und Anstellungsplanung, mit erlaubten Beschäftigtenkategorien), "
+    "Sachmittel und Overhead, optional nur eines Projekts.",
     {"acronym": {"type": "string"}},
 )
 def list_budget_items(user, acronym=None):
-    from projects.models import StaffBudgetItem
+    from projects.models import OtherBudgetItem, OverheadBudgetItem, StaffBudgetItem
 
-    items = StaffBudgetItem.objects.select_related("project").order_by("project__acronym", "title")
-    if acronym:
-        items = items.filter(project=_project(acronym))
-    return {"staff_budget_items": [
-        {"budget_item_id": i.id, "project": i.project.acronym, "title": i.title, "amount": _money(i.amount)}
-        for i in items
-    ]}
+    def scoped(model):
+        items = model.objects.select_related("project").order_by("project__acronym", "id")
+        return items.filter(project=_project(acronym)) if acronym else items
+
+    return {
+        "staff_budget_items": [
+            _budget_item_data(i, "staff")
+            for i in scoped(StaffBudgetItem).prefetch_related("staffbudgetitemeligibility_set").order_by("project__acronym", "title")
+        ],
+        "other_budget_items": [_budget_item_data(i, "other") for i in scoped(OtherBudgetItem).order_by("project__acronym", "title")],
+        "overhead_budget_items": [_budget_item_data(i, "overhead") for i in scoped(OverheadBudgetItem)],
+    }
 
 
 @tool(
@@ -1121,4 +1136,113 @@ def merge_employments(user, employment_ids, dry_run=False):
         }
         if dry_run:
             transaction.set_rollback(True)
+    return result
+
+
+BUDGET_KINDS = ("staff", "other", "overhead")
+
+
+def _budget_item_model(kind):
+    from projects.models import OtherBudgetItem, OverheadBudgetItem, StaffBudgetItem
+
+    if kind not in BUDGET_KINDS:
+        raise ToolError(f"kind muss eines von {', '.join(BUDGET_KINDS)} sein.")
+    return {"staff": StaffBudgetItem, "other": OtherBudgetItem, "overhead": OverheadBudgetItem}[kind]
+
+
+def _save_budget_item(item, kind, data, allowed_categories, dry_run):
+    """Validate with a ModelForm of the item's fields, set the allowed categories and save (or roll back)."""
+    from django.db import transaction
+    from django.forms import modelform_factory
+
+    from projects.models import EmploymentCategories, StaffBudgetItemEligibility
+
+    fields = ["amount"] if kind == "overhead" else ["title", "amount"]
+    form = modelform_factory(type(item), fields=fields)(data, instance=item)
+    if not form.is_valid():
+        raise ToolError(_form_errors(form))
+    if allowed_categories is not None:
+        if kind != "staff":
+            raise ToolError("allowed_categories gibt es nur bei Personalbudgets.")
+        unknown = sorted(set(allowed_categories) - set(EmploymentCategories))
+        if unknown:
+            raise ToolError(f"Unbekannte Kategorien: {', '.join(unknown)} (erlaubt: {', '.join(EmploymentCategories)}).")
+    created = item.pk is None
+    with transaction.atomic():
+        form.save()
+        if allowed_categories is not None:
+            item.staffbudgetitemeligibility_set.exclude(eligible_employment__in=allowed_categories).delete()
+            existing = set(item.staffbudgetitemeligibility_set.values_list("eligible_employment", flat=True))
+            StaffBudgetItemEligibility.objects.bulk_create(
+                StaffBudgetItemEligibility(budget_item=item, eligible_employment=category)
+                for category in sorted(set(allowed_categories) - existing)
+            )
+        result = {"dry_run": bool(dry_run), "created": created, "budget_item": _budget_item_data(item, kind)}
+        if kind == "staff":
+            from projects.utils import get_staff_budget_item_used
+
+            result["planned_staff_costs"] = _money(get_staff_budget_item_used(item))
+        if dry_run:
+            transaction.set_rollback(True)
+            if created:
+                result["budget_item"]["budget_item_id"] = None
+    return result
+
+
+@tool(
+    "create_budget_item",
+    "Legt einen Budgetposten eines Projekts an: kind staff (Personal), other (Sachmittel) oder overhead (ohne "
+    "Titel). allowed_categories nur für Personal (researcher, undergrad, student, professor). dry_run=true prüft nur.",
+    {
+        "project": {"type": "string", "description": "Akronym"},
+        "kind": {"type": "string", "enum": list(BUDGET_KINDS)},
+        "title": {"type": "string"},
+        "amount": {"type": "number"},
+        "allowed_categories": {"type": "array", "items": {"type": "string"}},
+        "dry_run": {"type": "boolean"},
+    },
+    required=["project", "kind", "amount"],
+    write=True,
+)
+def create_budget_item(user, project, kind, amount, title="", allowed_categories=None, dry_run=False):
+    model = _budget_item_model(kind)
+    if kind != "overhead" and not (title or "").strip():
+        raise ToolError("title: Bitte einen Titel angeben.")
+    item = model(project=_project(project))
+    return _save_budget_item(item, kind, {"title": title, "amount": amount}, allowed_categories, dry_run)
+
+
+@tool(
+    "update_budget_item",
+    "Ändert einen Budgetposten (IDs aus list_budget_items, kind wie dort, Standard staff); nur übergebene Felder "
+    "werden geändert. allowed_categories ersetzt die erlaubten Beschäftigtenkategorien eines Personalbudgets. "
+    "dry_run=true prüft nur.",
+    {
+        "budget_item_id": {"type": "integer"},
+        "kind": {"type": "string", "enum": list(BUDGET_KINDS)},
+        "title": {"type": "string"},
+        "amount": {"type": "number"},
+        "allowed_categories": {"type": "array", "items": {"type": "string"}},
+        "dry_run": {"type": "boolean"},
+    },
+    required=["budget_item_id"],
+    write=True,
+)
+def update_budget_item(user, budget_item_id, kind="staff", title=None, amount=None, allowed_categories=None,
+                       dry_run=False):
+    model = _budget_item_model(kind)
+    item = model.objects.select_related("project").filter(id=budget_item_id).first()
+    if item is None:
+        raise ToolError(f"Kein Budgetposten ({kind}) mit ID {budget_item_id}.")
+    if title is None and amount is None and allowed_categories is None:
+        raise ToolError("Keine Änderungen angegeben.")
+    if title is not None and kind == "overhead":
+        raise ToolError("Overhead-Posten haben keinen Titel.")
+    data = {
+        "title": getattr(item, "title", "") if title is None else title,
+        "amount": item.amount if amount is None else amount,
+    }
+    result = _save_budget_item(item, kind, data, allowed_categories, dry_run)
+    if dry_run:
+        item.refresh_from_db()
     return result

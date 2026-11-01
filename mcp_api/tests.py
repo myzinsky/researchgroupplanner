@@ -502,3 +502,79 @@ class McpEndpointTests(TestCase):
         self.assertTrue(Employment.objects.filter(id=gap.id).exists())
         result, _ = self.call("merge_employments", {"employment_ids": [self.employment.id, gap.id]})
         self.assertTrue(result["isError"])
+
+    # --- budget items ---
+
+    def test_list_budget_items_shows_allowed_categories(self):
+        from projects.models import OtherBudgetItem, OverheadBudgetItem, StaffBudgetItemEligibility
+
+        StaffBudgetItemEligibility.objects.create(budget_item=self.item, eligible_employment="researcher")
+        OtherBudgetItem.objects.create(project=self.project, title="Reisen", amount=Decimal("5000"))
+        OverheadBudgetItem.objects.create(project=self.project, amount=Decimal("20000"))
+
+        _, data = self.call("list_budget_items", {"acronym": "MCPX"})
+
+        self.assertEqual(data["staff_budget_items"][0]["allowed_categories"], ["researcher"])
+        self.assertEqual(data["other_budget_items"][0]["title"], "Reisen")
+        self.assertEqual(data["overhead_budget_items"][0]["amount"], 20000.0)
+
+    def test_create_budget_item(self):
+        from projects.models import OverheadBudgetItem, StaffBudgetItem
+
+        arguments = {"project": "mcpx", "kind": "staff", "title": "HiWi", "amount": 12000,
+                     "allowed_categories": ["student"]}
+        result, data = self.call("create_budget_item", {**arguments, "dry_run": True}, token=self.staff_token)
+        self.assertFalse(result["isError"], data)
+        self.assertIsNone(data["budget_item"]["budget_item_id"])
+        self.assertFalse(StaffBudgetItem.objects.filter(title="HiWi").exists())
+
+        result, data = self.call("create_budget_item", arguments, token=self.staff_token)
+        self.assertFalse(result["isError"], data)
+        item = StaffBudgetItem.objects.get(id=data["budget_item"]["budget_item_id"])
+        self.assertEqual(list(item.get_eligibilities().values_list("eligible_employment", flat=True)), ["student"])
+
+        result, data = self.call("create_budget_item", {"project": "MCPX", "kind": "overhead", "amount": 25000},
+                                 token=self.staff_token)
+        self.assertFalse(result["isError"], data)
+        self.assertEqual(OverheadBudgetItem.objects.get(project=self.project).amount, Decimal("25000"))
+
+        for overrides, expected in (({"kind": "x"}, "kind"), ({"title": ""}, "Titel"), ({"amount": "abc"}, "amount"),
+                                    ({"allowed_categories": ["boss"]}, "Unbekannte Kategorien"),
+                                    ({"project": "NOPE"}, "nicht gefunden"),
+                                    ({"kind": "other", "allowed_categories": ["student"]}, "nur bei Personal")):
+            result, message = self.call("create_budget_item", {**arguments, **overrides}, token=self.staff_token)
+            self.assertTrue(result["isError"], overrides)
+            self.assertIn(expected, message, overrides)
+
+    def test_update_budget_item(self):
+        from projects.models import StaffBudgetItemEligibility
+
+        StaffBudgetItemEligibility.objects.create(budget_item=self.item, eligible_employment="researcher")
+        arguments = {"budget_item_id": self.item.id, "amount": 90000,
+                     "allowed_categories": ["researcher", "undergrad"]}
+
+        result, data = self.call("update_budget_item", {**arguments, "dry_run": True}, token=self.staff_token)
+        self.assertFalse(result["isError"], data)
+        self.assertEqual(data["budget_item"]["allowed_categories"], ["researcher", "undergrad"])
+        self.item.refresh_from_db()
+        self.assertEqual((self.item.amount, self.item.get_eligibilities().count()), (Decimal("80000"), 1))
+
+        result, data = self.call("update_budget_item", arguments, token=self.staff_token)
+        self.assertFalse(result["isError"], data)
+        self.item.refresh_from_db()
+        self.assertEqual((self.item.amount, self.item.title), (Decimal("90000"), "WiMi"))
+        self.assertEqual(self.item.get_eligibilities().count(), 2)
+
+        result, message = self.call("update_budget_item", {"budget_item_id": self.item.id}, token=self.staff_token)
+        self.assertIn("Keine Änderungen", message)
+        result, message = self.call("update_budget_item", {"budget_item_id": self.item.id, "kind": "other",
+                                                           "amount": 1}, token=self.staff_token)
+        self.assertIn("Kein Budgetposten", message)
+
+    def test_budget_item_tools_require_staff(self):
+        result, _ = self.call("update_budget_item", {"budget_item_id": self.item.id, "amount": 1})
+        self.assertTrue(result["isError"])
+        result, _ = self.call("create_budget_item", {"project": "MCPX", "kind": "overhead", "amount": 1})
+        self.assertTrue(result["isError"])
+        self.item.refresh_from_db()
+        self.assertEqual(self.item.amount, Decimal("80000"))
