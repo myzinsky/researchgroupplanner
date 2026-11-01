@@ -1403,3 +1403,77 @@ def apply_sap_salaries(user, employment_id, dry_run=False):
         if dry_run:
             transaction.set_rollback(True)
     return result
+
+
+PROJECT_FIELDS = {
+    "start_date": "start_date", "end_date": "end_date", "extension_until": "extension_planning_date",
+    "budget_total": "budget_total", "no_overhead": "no_overhead",
+}
+
+
+@tool(
+    "update_project",
+    "Ändert Stammdaten eines Projekts: Laufzeit (start_date, end_date), kostenneutrale Verlängerung "
+    "(extension_until, null entfernt sie), Fördersumme (budget_total) und no_overhead (z. B. Auftragsforschung). "
+    "Nur übergebene Felder werden geändert. dry_run=true prüft nur.",
+    {
+        "acronym": {"type": "string"},
+        "start_date": {"type": "string", "description": "JJJJ-MM-TT"},
+        "end_date": {"type": "string", "description": "JJJJ-MM-TT"},
+        "extension_until": {"type": ["string", "null"], "description": "JJJJ-MM-TT"},
+        "budget_total": {"type": "number"},
+        "no_overhead": {"type": "boolean"},
+        "dry_run": {"type": "boolean"},
+    },
+    required=["acronym"],
+    write=True,
+)
+def update_project(user, acronym, dry_run=False, **changes):
+    from datetime import date
+    from decimal import InvalidOperation
+
+    from django.db import transaction
+
+    unknown = sorted(set(changes) - set(PROJECT_FIELDS))
+    if unknown:
+        raise ToolError("Unbekannte Felder: " + ", ".join(unknown))
+    if not changes:
+        raise ToolError("Keine Änderungen angegeben.")
+    project = _project(acronym)
+    for field, value in changes.items():
+        attribute = PROJECT_FIELDS[field]
+        if field in ("start_date", "end_date", "extension_until"):
+            if value is None and field != "extension_until":
+                raise ToolError(f"{field} darf nicht leer sein.")
+            try:
+                value = None if value is None else date.fromisoformat(value)
+            except (TypeError, ValueError):
+                raise ToolError(f"{field}: Datum im Format JJJJ-MM-TT erwartet, erhalten: {value!r}")
+        elif field == "budget_total":
+            try:
+                value = Decimal(str(value)).quantize(Decimal("0.01"))
+            except (InvalidOperation, ValueError):
+                raise ToolError(f"budget_total: Betrag erwartet, erhalten: {value!r}")
+        elif field == "no_overhead":
+            value = bool(value)
+        setattr(project, attribute, value)
+    if project.end_date < project.start_date:
+        raise ToolError("Das Projektende darf nicht vor dem Projektbeginn liegen.")
+    try:
+        project.full_clean()
+    except ValidationError as error:
+        raise ToolError(" ".join(error.messages))
+    with transaction.atomic():
+        project.save()
+        result = {
+            "dry_run": bool(dry_run),
+            "acronym": project.acronym,
+            "start": _day(project.start_date),
+            "end": _day(project.end_date),
+            "extension_until": _day(project.extension_planning_date),
+            "budget_total": _money(project.budget_total),
+            "no_overhead": project.no_overhead,
+        }
+        if dry_run:
+            transaction.set_rollback(True)
+    return result

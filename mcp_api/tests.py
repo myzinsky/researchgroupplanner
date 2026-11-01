@@ -728,6 +728,31 @@ class McpEndpointTests(TestCase):
         self.assertTrue(result["isError"])
         self.assertIn("SAP-Position", message)
 
+    def test_update_project(self):
+        arguments = {"acronym": "mcpx", "start_date": "2025-10-01", "extension_until": "2029-03-31",
+                     "no_overhead": True}
+
+        result, data = self.call("update_project", {**arguments, "dry_run": True}, token=self.staff_token)
+        self.assertFalse(result["isError"], data)
+        self.assertEqual((data["start"], data["extension_until"], data["no_overhead"]),
+                         ("2025-10-01", "2029-03-31", True))
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.start_date, date(2026, 1, 1))
+
+        result, data = self.call("update_project", arguments, token=self.staff_token)
+        self.project.refresh_from_db()
+        self.assertEqual((self.project.start_date, self.project.no_overhead), (date(2025, 10, 1), True))
+
+        for changes, expected in (({"end_date": "2025-01-01"}, "Projektende"), ({"extension_until": "2027-01-01"},
+                                  "Verlängerung"), ({"start_date": "x"}, "JJJJ-MM-TT"), ({}, "Keine"),
+                                  ({"acronym_new": "X"}, "Unbekannte")):
+            result, message = self.call("update_project", {"acronym": "MCPX", **changes}, token=self.staff_token)
+            self.assertTrue(result["isError"], changes)
+            self.assertIn(expected, message, changes)
+
+        result, _ = self.call("update_project", arguments)
+        self.assertTrue(result["isError"])
+
     def test_set_monthly_salaries_keeps_sap_months(self):
         self.add_sap_actuals(["2026-01"])
 

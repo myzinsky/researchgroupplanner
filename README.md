@@ -258,7 +258,8 @@ All users with a token get read access (projects and budgets, staff and
 employments, rebookings, warnings, SAP reconciliation, deliverables,
 statistics). Users with staff status additionally get write tools: create,
 complete and delete rebookings, plan, edit and delete employments, create, edit
-and delete allocations, edit and delete people, merge employments, create and edit budget
+and delete allocations, edit and delete people, merge employments, edit project master data (period,
+extension, grant total, no overhead), create and edit budget
 items, set monthly salaries manually, take over SAP actual salaries and ignore a warning.
 Editing an employment re-estimates the planned salaries from the TV-L tables
 (`reestimate=true` forces it without other changes) while months already booked
