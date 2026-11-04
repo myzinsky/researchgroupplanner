@@ -234,6 +234,43 @@ Manage user accounts in the Django admin under **Users**. Regular active users
 can access the planner. The admin link and SAP account statements remain limited
 to users with staff status.
 
+## MCP Interface
+
+The planner offers an [MCP](https://modelcontextprotocol.io) endpoint at `/mcp/`
+(Streamable HTTP, JSON responses) so that AI assistants can query the planning.
+
+1. In the Django admin under **MCP-Schnittstelle → API-Tokens**, add a token for a
+   user. The token (`rgp_…`) is shown once after saving; only a hash is stored.
+   Deactivate or delete the token to revoke access.
+2. Connect a client with the header `Authorization: Bearer <token>`, for example:
+
+   ```sh
+   # Claude Code
+   claude mcp add --transport http groupplanner https://planner.example.org/mcp/ \
+     --header "Authorization: Bearer rgp_..."
+   ```
+
+   Clients that only speak stdio (e.g. Claude Desktop) can use the
+   [`mcp-remote`](https://www.npmjs.com/package/mcp-remote) bridge:
+   `npx mcp-remote https://planner.example.org/mcp/ --header "Authorization: Bearer rgp_..."`.
+
+All users with a token get read access (projects and budgets, staff and
+employments, rebookings, warnings, SAP reconciliation, deliverables,
+statistics, funding gaps per person and free capacity per staff budget). Users with staff status additionally get write tools: create,
+complete and delete rebookings, plan, edit and delete employments, create, edit
+and delete allocations, edit and delete people, merge employments, edit project master data (period,
+extension, grant total, no overhead), add and delete deliverables, milestones and
+reporting periods, create and edit budget
+items, set monthly salaries manually, take over SAP actual salaries, plan non-staff
+costs (create, edit and delete transactions, also from an SAP position), map SAP
+cost types to budgets and ignore a warning.
+Editing an employment re-estimates the planned salaries from the TV-L tables
+(`reestimate=true` forces it without other changes) while months already booked
+in SAP keep their amounts; `apply_sap_salaries` sets those months to the SAP actuals. The employment and allocation tools support `dry_run` to
+preview the result and the cost change per budget. Write calls are written to
+the `mcp_api` logger (level INFO). Serve the endpoint over HTTPS only, since the token is sent
+with every request.
+
 ## Deployment-Specific Features
 
 Several controlling features can be adapted to the organization through
@@ -309,6 +346,15 @@ positions, annual pool budgets, and a source-independent **Universal project**.
 Exactly one funding source must be selected for each allocation. Universal
 allocations appear in staff details and the main timeline but are not charged to
 a project's planning budget.
+
+### Student Assistant Salaries
+
+Student assistants (category *Studentische Hilfskraft*) without a pay grade are
+estimated from the hourly rates in the Django admin under **SHK-Stundensätze**:
+one rate with and one without a bachelor's degree, each with a validity period
+and an employer share in percent. The weekly hours follow from the employment
+percentage (40 hours = 100 %), the monthly hours are weekly hours × 4.348. Mark
+the employment as **SHK mit Bachelor** to use the bachelor rate.
 
 ## SAP WebGUI Integration
 
@@ -424,6 +470,10 @@ download, the fiscal-year pages and the daily sync job.
 
    The project is detected from the PSP-Element. A new import replaces the
    previous one for that project. Dates of birth in payroll texts are dropped.
+
+   MCP clients (staff tokens) can use the tool `import_sap_export` with local
+   file paths; only files below `SAP_IMPORT_DIRS` (colon-separated, default
+   `~/Downloads`) are accepted, `dry_run` validates without saving.
 
 The import groups all bookings into positions: each staff contract
 (Mittelreservierung, with person, contract periods and payroll per month),

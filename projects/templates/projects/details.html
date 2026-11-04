@@ -33,6 +33,27 @@
         </td>
     </tr>
     {% endif %}
+    {% if sap_funds %}
+    <tr>
+        <th>SAP (PSP-Element):</th>
+        <td>
+            {% for fund in sap_funds %}
+                <div>
+                    {% if fund.url %}<a href="{{ fund.url }}" title="Ist-Stand in SAP">{{ fund.number }}</a>{% else %}{{ fund.number }}{% endif %}
+                    {% if fund.label %}<span class="text-muted">{{ fund.label }}</span>{% endif %}
+                </div>
+            {% endfor %}
+        </td>
+    </tr>
+    {% endif %}
+    {% if links %}
+    <tr>
+        <th>Links:</th>
+        <td>
+            {% for link in links %}<div><a href="{{ link.url }}" target="_blank" rel="noopener noreferrer">{{ link.title }}</a></div>{% endfor %}
+        </td>
+    </tr>
+    {% endif %}
     {% if project.no_overhead %}
     <tr>
         <th>Overhead:</th>
@@ -40,6 +61,54 @@
     </tr>
     {% endif %}
 </table>
+
+{% if contacts %}
+<h2>Ansprechpersonen</h2>
+<table class="table table-bordered table-sm">
+    <thead>
+        <tr>
+            <th>Funktion</th>
+            <th>Name</th>
+            <th>E-Mail</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for contact in contacts %}
+            <tr>
+                <td>{{ contact.function }}</td>
+                <td>{{ contact.name }}</td>
+                <td>{% if contact.email %}<a href="mailto:{{ contact.email }}">{{ contact.email }}</a>{% else %}<span class="text-muted">–</span>{% endif %}</td>
+            </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+
+{% if deliverables %}
+<h2>Deliverables</h2>
+<table class="table table-bordered table-sm">
+    <thead>
+        <tr>
+            <th>Deadline</th>
+            <th>Titel</th>
+            <th>Federführung</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for deliverable in deliverables %}
+            <tr{% if deliverable.deadline < today %} class="text-muted"{% elif deliverable.deadline <= soon %} class="table-warning"{% endif %}>
+                <td class="text-nowrap">
+                    {{ deliverable.deadline|date:"d.m.Y" }}
+                    {% if deliverable.deadline < today %}<span class="badge text-bg-secondary ms-1">vorbei</span>
+                    {% elif deliverable.deadline <= soon %}<span class="badge text-bg-warning ms-1">in ≤ 30 Tagen</span>{% endif %}
+                </td>
+                <td>{{ deliverable.title }}</td>
+                <td>{% if deliverable.is_lead %}<span class="badge text-bg-primary">Federführung</span>{% else %}<span class="text-muted">–</span>{% endif %}</td>
+            </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endif %}
 <div class="print-page-break"></div>
 
 <div class="d-flex justify-content-between align-items-center">

@@ -64,6 +64,7 @@ INSTALLED_APPS = [
     'projects.apps.ProjectsConfig',
     'staffing.apps.StaffingConfig',
     'sap_integration.apps.SAPIntegrationConfig',
+    'mcp_api.apps.McpApiConfig',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -255,6 +256,8 @@ SAP_BACKEND = os.getenv(
 # Upload of SAP Grants Management project exports (GM_E_4GBA) and their
 # reconciliation with the planning. Independent of the WebGUI download above.
 SAP_GM_IMPORT_ENABLED = env_bool('SAP_GM_IMPORT_ENABLED', False)
+# Directories the MCP tool import_sap_export may read exports from (colon-separated)
+SAP_IMPORT_DIRS = [d for d in os.getenv('SAP_IMPORT_DIRS', '~/Downloads').split(':') if d]
 
 # Cron Jobs Configuration
 # https://github.com/hartwork/django-crontab

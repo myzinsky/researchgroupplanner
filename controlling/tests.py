@@ -1,7 +1,7 @@
 import json
 import tempfile
 from calendar import monthrange
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
@@ -9,6 +9,7 @@ from unittest.mock import patch
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.urls import reverse
+from django.utils import timezone
 
 from projects.models import Project, SAPFund, StaffBudgetItem, StaffBudgetItemEligibility
 from staffing.models import Employment, EmploymentSalaries, StaffFundingAllocation, StaffMember
@@ -159,6 +160,17 @@ class StaffStatusWarningTests(TestCase):
             response,
             f"Status-Inkonsistenz bei {staff_member}",
         )
+
+
+    def test_future_employment_has_no_status_warning(self):
+        staff_member = StaffMember.objects.create(first_name="Future", last_name="Person", status="in_hire")
+        start = timezone.now().date() + timedelta(days=30)
+        Employment.objects.create(staff_member=staff_member, start_date=start, end_date=start + timedelta(days=365),
+                                  percentage=Decimal("100"))
+
+        response = self.client.get(reverse("warnings"))
+
+        self.assertNotContains(response, f"Status-Inkonsistenz bei {staff_member}")
 
 
 class FundingAllocationCoverageWarningTests(TestCase):

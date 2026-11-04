@@ -1,6 +1,7 @@
 from django.contrib import admin
 
 # Register your models here.
+from .forms import StaffMemberForm
 from .models import (
     Employment,
     EmploymentSalaries,
@@ -10,6 +11,7 @@ from .models import (
     SalaryTableEntry,
     StaffFundingAllocation,
     StaffMember,
+    StudentHourlyRate,
 )
 
 class EmploymentInline(admin.StackedInline):
@@ -17,6 +19,7 @@ class EmploymentInline(admin.StackedInline):
     extra = 0
 
 class StaffMemberAdmin(admin.ModelAdmin):
+    form = StaffMemberForm
     list_display = (
         'get_full_name',
         'email',
@@ -24,14 +27,7 @@ class StaffMemberAdmin(admin.ModelAdmin):
         'is_leadership',
         'status',
     )
-    fields = (
-        'first_name',
-        'last_name',
-        'email',
-        'sap_business_partner',
-        'is_leadership',
-        'status',
-    )
+    fields = StaffMemberForm._meta.fields
     inlines = [EmploymentInline]
     
     def get_full_name(self, obj):
@@ -91,3 +87,9 @@ class RebookingAdmin(admin.ModelAdmin):
     list_filter = ("budget_item__project",)
     search_fields = ("allocation__employment__staff_member__first_name", "allocation__employment__staff_member__last_name")
     list_select_related = ("allocation__employment__staff_member", "budget_item__project")
+
+
+@admin.register(StudentHourlyRate)
+class StudentHourlyRateAdmin(admin.ModelAdmin):
+    list_display = ("__str__", "has_bachelor", "hourly_rate", "employer_share", "valid_from", "valid_until")
+    list_filter = ("has_bachelor",)

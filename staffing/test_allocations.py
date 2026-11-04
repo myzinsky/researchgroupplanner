@@ -93,7 +93,7 @@ class AllocationUiTests(TestCase):
                 (self.old_item, Decimal("100"), date(2026, 7, 1), None, False),
             ],
         )
-        self.assertEqual({p.sap_reference for p in parts if p.budget_item == self.old_item}, {"4001234"})
+        self.assertEqual({p.sap_reference for p in parts}, {"4001234"})
 
     def test_complete_from_start_moves_allocation(self):
         self.rebook(start_date="2026-01-01")

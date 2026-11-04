@@ -4,7 +4,15 @@ from .models import IgnoredWarning
 from .utils import render
 from dateutil.relativedelta import relativedelta
 
-from projects.models import AnnualPool, Landesstelle, OverheadBudgetItemShare, Project, SAPFund, StaffBudgetItem
+from projects.models import (
+    AnnualPool,
+    Landesstelle,
+    OverheadBudgetItemShare,
+    Project,
+    ProjectDeliverable,
+    SAPFund,
+    StaffBudgetItem,
+)
 from staffing.models import Employment, EmploymentSalaries, StaffFundingAllocation, StaffMember
 from staffing.utils import (
     get_salaries_by_month,
@@ -179,6 +187,15 @@ def _iterate_month_starts(start_date, end_date):
 
 
 def warnings(request):
+    active_list, ignored_list = collect_warnings()
+    return render(request, "controlling/warnings.html", {
+        "warnings_list": active_list,
+        "ignored_list": ignored_list,
+    })
+
+
+def collect_warnings():
+    """All consistency warnings as (active, ignored) lists; each warning has a stable "key"."""
     today = timezone.now().date()
     warnings_list = []
 
@@ -555,6 +572,7 @@ def warnings(request):
             staff_member.status in {"active", "in_hire"}
             and not staff_member.is_leadership
             and not active_employments
+            and not any(e.start_date > today for e in staff_member.employment_set.all())
         ):
             warnings_list.append({
                 "severity": "warning",
@@ -649,11 +667,7 @@ def warnings(request):
         warning["key"] = IgnoredWarning.key_for(warning)
         warning["ignored"] = ignored.get(warning["key"])
         (ignored_list if warning["ignored"] else active_list).append(warning)
-
-    return render(request, "controlling/warnings.html", {
-        "warnings_list": active_list,
-        "ignored_list": ignored_list,
-    })
+    return active_list, ignored_list
 
 
 @login_required
@@ -921,10 +935,9 @@ def apply_all_sap_salaries(request, staff_id):
     return redirect("warnings")
 
 
-def statistics(request):
-    projects = Project.objects.all().order_by("start_date")
+def funds_by_year(projects):
+    """{year: funds}: each project budget (incl. overhead) spread evenly over its duration incl. extension."""
     yearly_totals = {}
-
     for project in projects:
         effective_end = project.end_date
         if project.extension_planning_date and project.extension_planning_date > project.end_date:
@@ -946,6 +959,12 @@ def statistics(request):
             key = str(current.year)
             yearly_totals[key] = yearly_totals.get(key, Decimal("0.00")) + monthly_share
             current += relativedelta(months=1)
+    return yearly_totals
+
+
+def statistics(request):
+    projects = Project.objects.all().order_by("start_date")
+    yearly_totals = funds_by_year(projects)
 
     sorted_years = sorted(yearly_totals.keys())
     yearly_values = [yearly_totals[year].quantize(Decimal("0.01")) for year in sorted_years]
@@ -1151,8 +1170,8 @@ def annual_pools(request):
 def main(request):
     today = timezone.now().date()
     projects = Project.objects.filter(
-        Q(extension_planning_date__isnull=False, extension_planning_date__gt=today)
-        | Q(extension_planning_date__isnull=True, end_date__gt=today)
+        Q(extension_planning_date__isnull=False, extension_planning_date__gte=today)
+        | Q(extension_planning_date__isnull=True, end_date__gte=today)
     ).order_by('start_date')
     staff = StaffMember.objects.all()
 
@@ -1230,6 +1249,11 @@ def main(request):
         else:
             staff_timeline_entries_employees.append(entry)
 
+    deliverables = [
+        {"project_id": d.project_id, "title": d.title, "deadline": d.deadline, "is_lead": d.is_lead}
+        for d in ProjectDeliverable.objects.filter(project__in=projects)
+    ]
+
     # Load project milestones
     milestones = []
     for project in projects:
@@ -1252,6 +1276,7 @@ def main(request):
         "staff_timeline_entries_hiwis": staff_timeline_entries_hiwis,
         "staff_timeline_entries_employees": staff_timeline_entries_employees,
         "project_milestones": milestones,
+        "project_deliverables": deliverables,
     })
 
 

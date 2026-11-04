@@ -152,6 +152,25 @@
     .vis-item.milestone-point .vis-item-content {
         display: none !important;
     }
+
+    /* Deliverables: diamonds, filled when we are leading them. */
+    .vis-item.deliverable-point {
+        background-color: #ffffff !important;
+        border: 2px solid #b58105 !important;
+        width: 11px !important;
+        height: 11px !important;
+        transform: rotate(45deg);
+        overflow: hidden !important;
+        margin-left: -5px !important;
+    }
+
+    .vis-item.deliverable-point.deliverable-lead {
+        background-color: #b58105 !important;
+    }
+
+    .vis-item.deliverable-point .vis-item-content {
+        display: none !important;
+    }
 </style>
 
 <script type="text/javascript">
@@ -312,6 +331,20 @@
             start: milestoneDate,
             end: milestoneDate,
             className: 'milestone-point',
+            type: 'point'
+        });
+{% endfor %}
+
+{% for deliverable in project_deliverables %}
+        var deliverableDate = gpBuildDate({{ deliverable.deadline|date:"Y" }}, {{ deliverable.deadline|date:"n" }}, {{ deliverable.deadline|date:"j" }});
+        items.push({
+            id: 'deliverable_{{ deliverable.project_id }}_{{ forloop.counter }}',
+            group: 'p{{ deliverable.project_id }}',
+            content: '◆',
+            title: '<strong>Deliverable: {{ deliverable.title|escapejs }}</strong><br>Deadline {{ deliverable.deadline }}{% if deliverable.is_lead %}<br>Federführung{% endif %}',
+            start: deliverableDate,
+            end: deliverableDate,
+            className: 'deliverable-point{% if deliverable.is_lead %} deliverable-lead{% endif %}',
             type: 'point'
         });
 {% endfor %}

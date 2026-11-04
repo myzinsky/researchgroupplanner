@@ -3,7 +3,6 @@ from controlling.utils import render
 from django.contrib import messages
 from datetime import date, timedelta
 
-from dateutil.relativedelta import relativedelta
 from django.db import transaction
 from django.views.decorators.http import require_POST
 from django.shortcuts import get_object_or_404, redirect
@@ -21,6 +20,8 @@ from projects.models import EmploymentCategories
 from .forms import AllocationForm, PlanEmploymentForm, RebookingForm
 from .utils import (
     apply_tariff_salaries,
+    create_planned_employment,
+    estimate_from_month,
     employment_merge_candidates,
     merge_employments,
     get_salaries_by_month,
@@ -104,7 +105,7 @@ def details(request: HttpRequest, staff_id: int):
         employment.has_sap_actuals = bool(sap_actuals)
         employment.sap_mismatches = get_sap_salary_mismatches(employment.salaries_by_month, sap_actuals)
         employment.sap_correction_links = get_sap_correction_links(sap_actuals, employment.sap_mismatches)
-        employment.can_estimate = bool(employment.salary_category_id and employment.start_level)
+        employment.can_estimate = employment.has_salary_basis()
         if not employment.can_estimate:
             # Prefill pay grade and level for the estimate from the person's other employments.
             defaults = person_defaults or {}
@@ -116,7 +117,7 @@ def details(request: HttpRequest, staff_id: int):
                     employment.start_date,
                 ).isoformat(),
             }
-        employment.estimate_from = _estimate_from(employment, sap_actuals)
+        employment.estimate_from = estimate_from_month(employment, sap_actuals)
         mismatch_months = {mismatch["month"] for mismatch in employment.sap_mismatches}
         employment.salary_rows = [
             (month, salary, sap_actuals.get(month, []), month in mismatch_months)
@@ -264,31 +265,8 @@ def plan_employment(request: HttpRequest):
 
     form = PlanEmploymentForm(request.POST or None, project=project, initial=initial)
     if request.method == "POST" and form.is_valid():
-        data = form.cleaned_data
-        with transaction.atomic():
-            staff_member = data["staff_member"] or StaffMember.objects.create(
-                first_name=data["first_name"], last_name=data["last_name"], status="in_hire",
-            )
-            employment = Employment.objects.create(
-                staff_member=staff_member,
-                start_date=data["start_date"],
-                end_date=data["end_date"],
-                percentage=data["percentage"],
-                category=data["category"],
-                status=data["status"],
-                salary_category=data["salary_category"],
-                start_level=data["start_level"],
-                level_start_date=data["level_start_date"] if data["start_level"] else None,
-                statutory_health_insurance=data["statutory_health_insurance"],
-            )
-            StaffFundingAllocation.objects.create(
-                employment=employment,
-                budget_item=data["budget_item"],
-                percentage=data["percentage"],
-                start_date=data["start_date"],
-                end_date=data["end_date"],
-            )
-            missing = apply_tariff_salaries(employment) if data["salary_category"] else None
+        employment, missing = create_planned_employment(form.cleaned_data)
+        staff_member = employment.staff_member
         messages.success(request, f"Anstellung für {staff_member} ({employment.get_status_display()}) angelegt.")
         if missing:
             messages.warning(
@@ -304,14 +282,6 @@ def plan_employment(request: HttpRequest):
         "project": project,
         "staff_defaults": staff_defaults,
     })
-
-
-def _estimate_from(employment, sap_actuals):
-    """First month to estimate: after the last month booked in SAP, else the employment start."""
-    if not sap_actuals:
-        return employment.start_date.strftime("%Y-%m")
-    last = date.fromisoformat(f"{max(sap_actuals)}-01")
-    return (last + relativedelta(months=1)).strftime("%Y-%m")
 
 
 @require_POST
@@ -332,7 +302,7 @@ def estimate_salaries(request: HttpRequest, employment_id: int):
             messages.error(request, "Gehälter nicht geschätzt: " + " ".join(error.messages))
             return redirect("staffing:details", staff_id=employment.staff_member_id)
         employment.save(update_fields=["salary_category", "start_level", "level_start_date"])
-    if not (employment.salary_category_id and employment.start_level):
+    if not employment.has_salary_basis():
         messages.error(request, "Für die Schätzung bitte Entgeltgruppe und Stufe bei der Anstellung hinterlegen.")
     else:
         with transaction.atomic():

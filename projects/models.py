@@ -51,6 +51,56 @@ class ProjectMilestone(models.Model):
         return f"{self.project.acronym} - {self.title} ({self.date})"
 
 
+class ProjectContact(models.Model):
+    """Person involved in a project (e.g. project officer, coordinator)."""
+
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="contacts")
+    name = models.CharField("Name", max_length=200)
+    email = models.EmailField("E-Mail", blank=True)
+    function = models.CharField("Funktion", max_length=200)
+
+    class Meta:
+        ordering = ["function", "name"]
+        verbose_name = "Ansprechperson"
+        verbose_name_plural = "Ansprechpersonen"
+
+    def __str__(self):
+        return f"{self.project.acronym} – {self.name} ({self.function})"
+
+
+class ProjectLink(models.Model):
+    """Additional link of a project, e.g. to the project website or a shared folder."""
+
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="links")
+    title = models.CharField("Titel", max_length=200)
+    url = models.URLField("URL", max_length=500)
+
+    class Meta:
+        ordering = ["title"]
+        verbose_name = "Link"
+        verbose_name_plural = "Links"
+
+    def __str__(self):
+        return f"{self.project.acronym} – {self.title}"
+
+
+class ProjectDeliverable(models.Model):
+    """Deliverable of a project with its deadline."""
+
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="deliverables")
+    title = models.CharField("Titel", max_length=200)
+    deadline = models.DateField("Deadline")
+    is_lead = models.BooleanField("Federführung", default=False, help_text="Wir sind für das Deliverable verantwortlich.")
+
+    class Meta:
+        ordering = ["deadline", "title"]
+        verbose_name = "Deliverable"
+        verbose_name_plural = "Deliverables"
+
+    def __str__(self):
+        return f"{self.project.acronym} – {self.title} ({self.deadline:%d.%m.%Y})"
+
+
 class ReportingPeriod(models.Model):
     """Additional reporting period (Berichtszeitraum) of a project."""
 

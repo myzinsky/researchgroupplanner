@@ -239,6 +239,16 @@ def special_payment(employment, year):
     }
 
 
+def estimate_from_month(employment, sap_actuals):
+    """First month to estimate: after the last month booked in SAP, else the employment start."""
+    from datetime import date
+
+    if not sap_actuals:
+        return employment.start_date.strftime("%Y-%m")
+    last = date.fromisoformat(f"{max(sap_actuals)}-01")
+    return (last + relativedelta(months=1)).strftime("%Y-%m")
+
+
 def apply_tariff_salaries(employment, from_month=None):
     """Fill the employment's salaries from the TV-L tables, incl. Jahressonderzahlung in November.
 
@@ -248,8 +258,6 @@ def apply_tariff_salaries(employment, from_month=None):
     Returns the months without a table amount, which also keep their amounts.
     """
     from datetime import date
-
-    from .models import EmploymentSalaries
 
     existing = get_salaries_by_month(employment)
     months = []  # (first_day, last_day, amount, is_rate)
@@ -277,6 +285,18 @@ def apply_tariff_salaries(employment, from_month=None):
         if amount:
             months.append((first_day, last_day, amount, is_rate))
 
+    _store_monthly_amounts(employment, months)
+    return missing
+
+
+def _store_monthly_amounts(employment, months):
+    """Replace the employment's salaries by [(first_day, last_day, amount, is_rate)].
+
+    Full months are monthly rates (equal consecutive months merged), other
+    entries exact amounts.
+    """
+    from .models import EmploymentSalaries
+
     records = []
     for first_day, last_day, amount, is_rate in months:
         previous = records[-1] if records else None
@@ -293,7 +313,30 @@ def apply_tariff_salaries(employment, from_month=None):
 
     employment.employmentsalaries_set.all().delete()
     EmploymentSalaries.objects.bulk_create(records)
-    return missing
+
+
+def set_monthly_salaries(employment, amounts):
+    """Set manual monthly amounts {"YYYY-MM": Decimal}; the other months keep their amounts.
+
+    Months must lie in the employment; a month only partly employed gets the
+    amount as exact amount for the employed days.
+    """
+    from datetime import date
+
+    existing = get_salaries_by_month(employment)
+    unknown = sorted(set(amounts) - set(existing))
+    if unknown:
+        raise ValueError("Monate außerhalb der Anstellung: " + ", ".join(unknown))
+    months = []
+    for month in _month_keys(employment.start_date, employment.end_date):
+        month_start = date.fromisoformat(f"{month}-01")
+        first_day = max(month_start, employment.start_date)
+        last_day = min(_month_end(month), employment.end_date)
+        is_full = first_day == month_start and last_day == _month_end(month)
+        amount = amounts.get(month, existing[month])
+        if amount:
+            months.append((first_day, last_day, amount, is_full))
+    _store_monthly_amounts(employment, months)
 
 
 def _previous_month_key(month):
@@ -506,3 +549,75 @@ def staff_reservations(staff_member):
                 "ignored": bool(check and check.ignored),
             })
     return sorted(result, key=lambda r: (min((s for s, _ in r["periods"]), default=r["position"].first_date or date.max)))
+
+
+def allocation_conflicts(allocation):
+    """Messages why an allocation does not fit: outside its employment or project, or over-allocating the employment."""
+    employment = allocation.employment
+    start, end = allocation.start_date, allocation.end_date or employment.end_date
+    problems = []
+    if start < employment.start_date or end > employment.end_date:
+        problems.append(
+            f"Die Zuordnung muss in der Anstellung liegen ({employment.start_date:%d.%m.%Y} – {employment.end_date:%d.%m.%Y})."
+        )
+    if allocation.budget_item_id:
+        project = allocation.budget_item.project
+        project_end = project.get_effective_end_date()
+        if start < project.start_date or end > project_end:
+            problems.append(
+                f"Die Zuordnung muss in der Projektlaufzeit von {project.acronym} liegen "
+                f"({project.start_date:%d.%m.%Y} – {project_end:%d.%m.%Y})."
+            )
+    others = [
+        (other.start_date, other.end_date or employment.end_date, other.percentage)
+        for other in employment.stafffundingallocation_set.exclude(pk=allocation.pk)
+    ]
+    others = [(s, e, p) for s, e, p in others if s <= end and start <= e]
+    # The sum is largest at the start of one of the overlapping periods.
+    for day in sorted({start} | {s for s, _, _ in others if s > start}):
+        total = allocation.percentage + sum((p for s, e, p in others if s <= day <= e), Decimal("0"))
+        if total > employment.percentage:
+            problems.append(
+                f"Ab {day:%d.%m.%Y} wären {total.normalize():f} % zugeordnet, die Anstellung hat nur "
+                f"{employment.percentage.normalize():f} %."
+            )
+            break
+    return problems
+
+
+def create_planned_employment(data):
+    """Create an employment with one allocation and, with a pay grade, salaries from the TV-L tables.
+
+    data: cleaned data of PlanEmploymentForm. Returns (employment, months without table
+    amount); the months are None without pay grade or SHK hourly rate (no salaries created).
+    """
+    from django.db import transaction
+
+    from .models import StaffFundingAllocation
+
+    with transaction.atomic():
+        staff_member = data["staff_member"] or StaffMember.objects.create(
+            first_name=data["first_name"], last_name=data["last_name"], status="in_hire",
+        )
+        employment = Employment.objects.create(
+            staff_member=staff_member,
+            start_date=data["start_date"],
+            end_date=data["end_date"],
+            percentage=data["percentage"],
+            category=data["category"],
+            status=data["status"],
+            salary_category=data["salary_category"],
+            start_level=data["start_level"],
+            level_start_date=data["level_start_date"] if data["start_level"] else None,
+            statutory_health_insurance=data["statutory_health_insurance"],
+            has_bachelor=data.get("has_bachelor", False),
+        )
+        StaffFundingAllocation.objects.create(
+            employment=employment,
+            budget_item=data["budget_item"],
+            percentage=data["percentage"],
+            start_date=data["start_date"],
+            end_date=data["end_date"],
+        )
+        missing = apply_tariff_salaries(employment) if employment.has_salary_basis() else None
+    return employment, missing
