@@ -7,7 +7,22 @@ from pathlib import Path
 from openpyxl import load_workbook
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+# Keep the original display fields for the salary comparison. The expense
+# reconciliation uses these additional, ungrouped source fields instead.
+DOCUMENT_COLUMNS = {
+    "financial_center": "Finanzstelle",
+    "financial_position": "Finanzposition",
+    "gl_account": "Sachkonto",
+    "document_number": "FI-Belegnummer",
+    "document_type": "Belegart",
+    "reversal_document": "Stornobeleg",
+    "reference": "Referenz",
+    "header_text": "Belegkopftext",
+    "item_text": "Positionstext",
+    "purchase_document": "Einkaufsbeleg",
+    "document_item": "Position",
+}
 TRANSACTION_HEADERS = {
     "Fonds",
     "Name des Geschäftspartners",
@@ -91,7 +106,7 @@ def _parse_budget(path, funds):
 
 
 def _parse_transactions(path, funds, transaction_type):
-    for row in _iter_rows(path, TRANSACTION_HEADERS):
+    for source_row, row in enumerate(_iter_rows(path, TRANSACTION_HEADERS), start=2):
         fund = funds.get(_normalize_fund_number(row["Fonds"]))
         if fund is None:
             continue
@@ -112,6 +127,8 @@ def _parse_transactions(path, funds, transaction_type):
                 "position": position,
                 "amount": _decimal_string(amount),
                 "booking_date": _date_string(row.get("Buchungsdatum")),
+                "source_row": source_row,
+                **{name: _normalize_fund_number(row.get(column)) for name, column in DOCUMENT_COLUMNS.items()},
             }
         )
         total_key = "actual_total" if transaction_type == "actual" else "commitments_total"

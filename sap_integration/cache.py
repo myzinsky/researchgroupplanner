@@ -27,7 +27,9 @@ def load_year(data_dir, year):
         payload = json.loads(cache_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise SAPCacheError(f"Der SAP-Cache für {year} ist beschädigt.") from error
-    if payload.get("schema_version") != SCHEMA_VERSION or payload.get("year") != year:
+    # Old caches remain usable for statements and the existing salary workflow.
+    # Only expense reconciliation requires the new document fields.
+    if payload.get("schema_version") not in {1, SCHEMA_VERSION} or payload.get("year") != year:
         raise SAPCacheError(f"Der SAP-Cache für {year} hat ein unbekanntes Format.")
     return payload
 

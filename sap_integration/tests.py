@@ -509,6 +509,42 @@ class SAPViewsTests(TestCase):
         )
         self.assertContains(response, f'href="{target}?clean=1"', html=False)
 
+    def test_financial_positions_and_category_tooltips_survive_clean_grouping(self):
+        from sap_integration.models import SAPExpenseCategory
+
+        SAPExpenseCategory.objects.create(key="travel", label="Reisekosten", kind="travel", exact_codes=["88001-0101"])
+        SAPExpenseCategory.objects.create(key="materials", label="Verbrauchsmaterial", kind="other", exact_codes=["88000-0102"])
+        _write_processed_cache(self.data_dir, self.fund.fund_number, transactions=[
+            {**_transaction("actual", "Partner", "Gleicher Text", "100.00"), "financial_position": "88001-0101"},
+            {**_transaction("actual", "Partner", "Gleicher Text", "50.00"), "financial_position": "88000-0102"},
+        ])
+        with self.settings(SAP_ENABLED=True, SAP_DATA_DIR=self.data_dir):
+            url = reverse("sap_integration:fund_detail", args=[2026, self.fund.pk])
+            original = self.client.get(url)
+            cleaned = self.client.get(url, {"clean": "1"})
+        for response in (original, cleaned):
+            self.assertContains(response, "<th>Finanzposition</th>", html=True)
+            self.assertContains(response, "<code>88001-0101</code>", html=True)
+            self.assertContains(response, "<code>88000-0102</code>", html=True)
+            self.assertContains(response, 'title="Reisekosten"', html=False)
+            self.assertContains(response, 'title="Verbrauchsmaterial"', html=False)
+            self.assertEqual(response.context["values"]["actual_total"], Decimal("150.00"))
+        self.assertEqual(len(original.context["values"]["transactions"]), 2)
+        self.assertEqual(len(cleaned.context["values"]["transactions"]), 1)
+
+    def test_other_webgui_backend_does_not_expose_financial_position_workflow(self):
+        with self.settings(SAP_ENABLED=True, SAP_DATA_DIR=self.data_dir, SAP_BACKEND="sap_integration.tests.FakeSAPBackend"):
+            url = reverse("sap_integration:fund_detail", args=[2026, self.fund.pk])
+            for query in ({}, {"clean": "1"}):
+                response = self.client.get(url, query)
+                self.assertEqual(response.status_code, 200)
+                self.assertNotContains(response, "<th>Finanzposition</th>", html=False)
+                self.assertNotContains(response, "data-financial-position-info")
+                self.assertNotContains(response, "Reisen und Sachmittel abgleichen")
+                self.assertContains(response, '<td colspan="2">Summe</td>', html=True)
+            self.assertEqual(self.client.get(reverse("sap_integration:expense_categories")).status_code, 404)
+            self.assertEqual(self.client.get(reverse("sap_integration:expenses", args=[self.fund.pk])).status_code, 404)
+
     def test_clean_fund_detail_uses_cleaned_transactions(self):
         _write_processed_cache(
             self.data_dir,

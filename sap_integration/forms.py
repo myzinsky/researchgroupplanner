@@ -2,6 +2,7 @@ from django import forms
 
 from projects.models import EmploymentCategories, OtherBudgetItem, OtherBudgetItemTransaction, StaffBudgetItem
 from staffing.models import Employment, StaffFundingAllocation, StaffMember
+from sap_integration.models import SAPExpenseCategory
 
 
 class ExportUploadForm(forms.Form):
@@ -116,3 +117,73 @@ def budget_choices(project):
         for item in OtherBudgetItem.objects.filter(project=project)
     ]
     return choices
+
+
+class CodeListField(forms.CharField):
+    widget = forms.Textarea
+
+    def prepare_value(self, value):
+        return "\n".join(value) if isinstance(value, list) else value
+
+    def to_python(self, value):
+        import re
+
+        return [part for part in re.split(r"[\s,;]+", value or "") if part]
+
+
+class ExpenseCategoryForm(forms.ModelForm):
+    exact_codes = CodeListField(label="Finanzpositionen", required=False,
+                                help_text="Eine Nummer pro Zeile; auch Kommas sind möglich.")
+    patterns = CodeListField(label="Wildcard-Muster", required=False,
+                            help_text="Ein Muster pro Zeile. * steht für beliebig viele Zeichen, ? für genau eines. Beispiel: *-0101.")
+
+    class Meta:
+        model = SAPExpenseCategory
+        fields = ["key", "label", "kind", "exact_codes", "patterns", "is_active"]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["key"].help_text = "Stabile Kennung für den Austausch mit anderen Installationen. Nach dem Anlegen unveränderlich."
+        if self.instance.pk:
+            self.fields["key"].disabled = True
+
+
+class ExpenseConfigUploadForm(forms.Form):
+    config_file = forms.FileField(label="Kategorienkonfiguration (.json)")
+
+    def clean_config_file(self):
+        from sap_integration.expense_config import MAX_CONFIG_BYTES
+
+        uploaded = self.cleaned_data["config_file"]
+        if uploaded.size > MAX_CONFIG_BYTES:
+            raise forms.ValidationError("Die Konfiguration darf höchstens 256 KB groß sein.")
+        return uploaded
+
+
+class ExpenseTransactionChoiceField(forms.ModelChoiceField):
+    def label_from_instance(self, obj):
+        return f"{obj.date:%d.%m.%Y} · {obj.amount} € · {obj.budget_item.title} · {(obj.description or '')[:120]}"
+
+
+class ExpenseApplyForm(forms.Form):
+    planner_transaction = ExpenseTransactionChoiceField(
+        OtherBudgetItemTransaction.objects.none(), required=False, label="Bestehender Planungseintrag",
+        empty_label="– neuen Eintrag anlegen –",
+    )
+    budget_item = forms.ModelChoiceField(OtherBudgetItem.objects.none(), label="Planungsbudget für den neuen Eintrag", required=False)
+
+    def __init__(self, *args, project, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["budget_item"].queryset = OtherBudgetItem.objects.filter(project=project)
+        self.fields["planner_transaction"].queryset = OtherBudgetItemTransaction.objects.filter(
+            budget_item__project=project
+        ).select_related("budget_item").order_by("date", "id")
+
+    def clean(self):
+        data = super().clean()
+        target = data.get("planner_transaction")
+        if target:
+            data["budget_item"] = target.budget_item
+        elif not data.get("budget_item"):
+            self.add_error("budget_item", "Bitte für den neuen Eintrag ein Planungsbudget auswählen.")
+        return data

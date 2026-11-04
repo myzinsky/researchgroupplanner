@@ -5,8 +5,9 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
 
-from projects.models import OtherBudgetItem, SAPFund, StaffBudgetItem
+from projects.models import OtherBudgetItem, OtherBudgetItemTransaction, SAPFund, StaffBudgetItem
 from staffing.models import StaffMember
+from sap_integration.category_rules import validate_exact_codes, validate_patterns
 
 
 # FMM-Werttyp of manual transfer postings between funds.
@@ -44,8 +45,8 @@ class SAPImport(models.Model):
 
     class Meta:
         ordering = ["-imported_at"]
-        verbose_name = "SAP-Import"
-        verbose_name_plural = "SAP-Importe"
+        verbose_name = "Projektexport (GM)"
+        verbose_name_plural = "Projektexporte (GM)"
 
     def __str__(self):
         return f"{self.fund.fund_number} ({self.imported_at:%d.%m.%Y %H:%M})"
@@ -165,8 +166,8 @@ class SAPCostTypeMapping(models.Model):
     class Meta:
         ordering = ["fund", "cost_type"]
         unique_together = [("fund", "cost_type")]
-        verbose_name = "SAP-E/A-Art-Zuordnung"
-        verbose_name_plural = "SAP-E/A-Art-Zuordnungen"
+        verbose_name = "E/A-Art-Zuordnung (GM)"
+        verbose_name_plural = "E/A-Art-Zuordnungen (GM)"
 
     def clean(self):
         super().clean()
@@ -198,8 +199,8 @@ class SAPPersonMapping(models.Model):
 
     class Meta:
         ordering = ["sap_name"]
-        verbose_name = "SAP-Namenszuordnung"
-        verbose_name_plural = "SAP-Namenszuordnungen"
+        verbose_name = "Namenszuordnung (GM)"
+        verbose_name_plural = "Namenszuordnungen (GM)"
 
     def save(self, *args, **kwargs):
         from sap_integration.names import name_key
@@ -227,8 +228,99 @@ class SAPIgnoredPosition(models.Model):
 
     class Meta:
         unique_together = [("fund", "reference")]
-        verbose_name = "Ignorierte SAP-Position"
-        verbose_name_plural = "Ignorierte SAP-Positionen"
+        verbose_name = "Ignorierte Position (GM)"
+        verbose_name_plural = "Ignorierte Positionen (GM)"
 
     def __str__(self):
         return f"{self.fund.fund_number} {self.reference}"
+
+
+class SAPExpenseCategory(models.Model):
+    """Institution-wide Würzburg rules; keys travel between installations."""
+
+    key = models.SlugField("Kennung", max_length=80, unique=True)
+    label = models.CharField("Bezeichnung", max_length=200)
+    kind = models.CharField("Kostenart", max_length=20, choices=[("travel", "Reisen"), ("other", "Sachmittel"), ("staff", "Personal")])
+    exact_codes = models.JSONField("Finanzpositionen", default=list, blank=True, validators=[validate_exact_codes])
+    patterns = models.JSONField("Wildcard-Muster", default=list, blank=True, validators=[validate_patterns])
+    is_active = models.BooleanField("Aktiv", default=True)
+
+    class Meta:
+        ordering = ["label"]
+        verbose_name = "Ausgabenkategorie (Finanzposition)"
+        verbose_name_plural = "Ausgabenkategorien (Finanzposition)"
+
+    def __str__(self):
+        return self.label
+
+    def clean(self):
+        super().clean()
+        # JSONField skips validators for some empty values (e.g. {}), but the
+        # matching engine always needs lists, including for an empty rule set.
+        validate_exact_codes(self.exact_codes)
+        validate_patterns(self.patterns)
+        if not self.exact_codes and not self.patterns:
+            raise ValidationError("Bitte mindestens eine Finanzposition oder ein Muster angeben.")
+
+
+class SAPExpenseBudgetMapping(models.Model):
+    fund = models.ForeignKey(SAPFund, on_delete=models.CASCADE)
+    category = models.ForeignKey(SAPExpenseCategory, on_delete=models.CASCADE)
+    budget_item = models.ForeignKey(OtherBudgetItem, on_delete=models.CASCADE, verbose_name="Planungsbudget")
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["fund", "category"], name="unique_wuerzburg_category_budget")]
+        verbose_name = "Budgetzuordnung (Finanzposition)"
+        verbose_name_plural = "Budgetzuordnungen (Finanzposition)"
+
+    def clean(self):
+        super().clean()
+        if self.category_id and self.category.kind == "staff":
+            raise ValidationError("Personalkategorien werden über den Gehaltsabgleich behandelt und keinem Sachmittelbudget zugeordnet.")
+        if self.fund_id and self.budget_item_id and (
+            not self.fund.project_id or self.fund.project_id != self.budget_item.project_id
+        ):
+            raise ValidationError("Das Budget muss zum Projekt des SAP-Fonds gehören.")
+
+    def __str__(self):
+        return f"{self.fund} / {self.category} → {self.budget_item}"
+
+
+class SAPExpenseLink(models.Model):
+    """Stable document component identity, never tied to a disposable cache row.
+
+    Ambiguous components are blocked before creating a link. Superseded
+    commitments stay recorded so a later download cannot import them again.
+    """
+
+    fund = models.ForeignKey(SAPFund, on_delete=models.PROTECT)
+    year = models.PositiveIntegerField()
+    source_key = models.CharField(max_length=64)
+    source_type = models.CharField(max_length=20, choices=[("actual", "Ist"), ("commitment", "Obligo")])
+    planner_transaction = models.ForeignKey(OtherBudgetItemTransaction, on_delete=models.PROTECT, related_name="wuerzburg_links")
+    remainder_transaction = models.ForeignKey(
+        OtherBudgetItemTransaction, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="wuerzburg_remainders",
+    )
+    is_active = models.BooleanField(default=True)
+    # A copy of the exact last confirmed source and planning state for review.
+    source_snapshot = models.JSONField(default=dict)
+    planning_snapshot = models.JSONField(default=dict)
+    confirmed_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL)
+    confirmed_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["fund", "year", "source_key"], name="unique_wuerzburg_expense_source"),
+            models.UniqueConstraint(fields=["planner_transaction"], condition=models.Q(is_active=True), name="unique_active_wuerzburg_target"),
+        ]
+
+
+class SAPExpenseAudit(models.Model):
+    link = models.ForeignKey(SAPExpenseLink, on_delete=models.PROTECT, related_name="audit_entries")
+    created_at = models.DateTimeField(auto_now_add=True)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL)
+    action = models.CharField(max_length=30)
+    before = models.JSONField(default=dict)
+    after = models.JSONField(default=dict)
+    source_snapshot = models.JSONField(default=dict)

@@ -14,11 +14,13 @@
                     <div>
                         <h5 class="mb-1">{{ warning.title }}</h5>
                         {% if warning.details %}
+                            {% if warning.collapse_details %}<details><summary class="mb-1">{{ warning.detail }}</summary>{% endif %}
                             <ul class="mb-1">
                                 {% for detail in warning.details %}
                                     <li>{{ detail }}</li>
                                 {% endfor %}
                             </ul>
+                            {% if warning.collapse_details %}</details>{% endif %}
                             {% if warning.sap_salary_summary %}
                                 <div class="border-top mt-2 pt-2 mb-2">
                                     <strong>Gesamt {{ warning.sap_salary_summary.period }}:</strong>

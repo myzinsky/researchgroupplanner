@@ -8,6 +8,13 @@ class SAPConfigurationError(ValueError):
     pass
 
 
+def financial_positions_enabled():
+    """Würzburg's financial-position workflow is separate from GM and other adapters."""
+    return settings.SAP_ENABLED and settings.SAP_BACKEND.strip() == (
+        "sap_integration.backends.wuerzburg.WuerzburgWebGUIBackend"
+    )
+
+
 @dataclass(frozen=True)
 class SAPConfig:
     enabled: bool

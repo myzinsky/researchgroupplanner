@@ -50,6 +50,8 @@ from sap_integration.transform import (
     update_transaction_amount,
 )
 from sap_integration.cleaning import clean_fund_values
+from sap_integration.category_rules import classify
+from sap_integration.config import financial_positions_enabled
 
 
 def _ensure_enabled():
@@ -255,6 +257,8 @@ def fund_detail(request, year, fund_id):
                 fund.treat_negative_actuals_as_funding
             ),
         )
+    if financial_positions_enabled():
+        _annotate_financial_positions(values["transactions"])
     return render(
         request,
         "sap_integration/fund_detail.html",
@@ -269,6 +273,29 @@ def fund_detail(request, year, fund_id):
             "generated_at": _generated_at(payload),
         },
     )
+
+
+def _annotate_financial_positions(transactions):
+    from sap_integration.models import SAPExpenseCategory
+
+    categories = list(SAPExpenseCategory.objects.all())
+    descriptions = {}
+    for transaction in transactions:
+        info = []
+        for code in transaction.get("financial_positions", [transaction.get("financial_position") or ""]):
+            if code not in descriptions:
+                category, matches = classify(code, categories)
+                if category:
+                    description = category.label
+                elif len(matches) > 1:
+                    description = "Mehrdeutige Zuordnung: " + ", ".join(match.label for match in matches)
+                elif code.startswith("28"):
+                    description = "Einnahmen / Mittelzuflüsse (keine Ausgabenkategorie erforderlich)."
+                else:
+                    description = "Keine Ausgabenkategorie für diese Finanzposition hinterlegt."
+                descriptions[code] = description
+            info.append({"code": code, "description": descriptions[code]})
+        transaction["financial_position_info"] = info
 
 
 KIND_SECTIONS = [

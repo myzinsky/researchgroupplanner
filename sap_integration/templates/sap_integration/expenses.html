@@ -1,0 +1,45 @@
+{% extends "controlling/base.html" %}
+{% load l10n %}
+{% block title %}SAP-Ausgabenabgleich {{ fund.fund_number }}{% endblock %}
+{% block heading %}Reisen und Sachmittel: {{ fund.project|default:fund }}{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between gap-3 flex-wrap mb-3">
+    <a href="{% url 'sap_integration:overview' %}">← Zum Ist-Stand</a>
+    <a href="{% url 'sap_integration:expense_categories' %}">Kategorien und Nummernregeln verwalten</a>
+</div>
+<p>Fonds {{ fund.fund_number }} · {{ open_count }} offene Zuordnungen oder Abweichungen. Öffne eine Buchung, wähle den passenden Planungseintrag oder ein Zielbudget und klicke auf „In Planung übernehmen“.</p>
+<form method="get" class="d-flex gap-2 align-items-center mb-3">
+    <label for="expense-year">Geschäftsjahr</label>
+    <select class="form-select w-auto" name="year" id="expense-year">{% for option in years %}<option value="{{ option|unlocalize }}"{% if option == year %} selected{% endif %}>{{ option|unlocalize }}</option>{% empty %}<option>{{ year|unlocalize }}</option>{% endfor %}</select>
+    <button class="btn btn-outline-primary">Anzeigen</button>
+    {% if show_all %}<a href="?year={{ year|unlocalize }}">Nur offene anzeigen</a>{% else %}<a href="?year={{ year|unlocalize }}&amp;all=1">Alle anzeigen</a>{% endif %}
+</form>
+{% if cache_error %}<div class="alert alert-warning">{{ cache_error }}</div>{% endif %}
+{% if not fund.project_id %}<div class="alert alert-warning">Dieser Fonds ist keinem Projekt zugeordnet. Eine Übernahme ist gesperrt.</div>{% endif %}
+<div class="table-responsive"><table class="table table-bordered align-middle">
+    <thead><tr><th>Datum / Beleg</th><th>Beschreibung / Finanzposition</th><th>Kategorie</th><th>Ist</th><th>Offenes Obligo</th><th>Status</th></tr></thead>
+    <tbody>{% for check in checks %}<tr{% if check.source_type == 'commitment' %} class="table-secondary"{% endif %}>
+        <td><a href="{% url 'sap_integration:expense_detail' fund.id year check.key %}">{{ check.row.document_number|default:"Ohne Belegnummer" }}</a><br>{{ check.row.booking_date }}</td>
+        <td>{{ check.description }}<br><small class="text-muted">{{ check.row.business_partner }} · {{ check.row.financial_position }}</small></td>
+        <td>{{ check.category|default:"Nicht zugeordnet" }}</td>
+        <td class="text-end text-nowrap">{% if check.source_type == 'actual' %}{{ check.amount|floatformat:"2g" }} €{% else %}–{% endif %}</td>
+        <td class="text-end text-nowrap">{% if check.source_type == 'commitment' %}{{ check.amount|floatformat:"2g" }} €{% else %}–{% endif %}</td>
+        <td>{{ check.status }}{% for reason in check.blocking %}<div class="small text-danger">{{ reason }}</div>{% endfor %}</td>
+    </tr>{% empty %}<tr><td colspan="6">Keine offenen Ausgaben in dieser Ansicht.</td></tr>{% endfor %}</tbody>
+</table></div>
+<h2 class="h4 mt-4">Kategorien und Planungsbudgets</h2>
+<p>Die Zuordnung schlägt das Zielbudget vor und übernimmt keine Buchungen. Die Summen zeigen SAP-Ist und SAP-Obligo getrennt aus dem Export. Auch ein in der Planung abgelöstes Obligo bleibt hier sichtbar, solange es in SAP noch offen ist; es erzeugt keinen zusätzlichen Planungseintrag.</p>
+<div class="table-responsive"><table class="table table-bordered align-middle">
+    <thead><tr><th>Kategorie</th><th>Ist</th><th>Offenes Obligo</th><th>Planungsbudget</th></tr></thead>
+    <tbody>{% for row in category_rows %}<tr>
+        <td>{{ row.category }}</td><td class="text-end">{{ row.actual|floatformat:"2g" }} €</td><td class="text-end">{{ row.commitment|floatformat:"2g" }} €</td>
+        <td>{% if fund.project_id %}<form method="post" class="d-flex gap-2">{% csrf_token %}
+            <input type="hidden" name="action" value="map"><input type="hidden" name="category" value="{{ row.category.pk|unlocalize }}">
+            <select class="form-select" name="budget_item" aria-label="Planungsbudget für {{ row.category }}"><option value="">– keine Zuordnung –</option>{% for item in budget_items %}<option value="{{ item.pk|unlocalize }}"{% if row.budget_id == item.pk %} selected{% endif %}>{{ item.title }}</option>{% endfor %}</select>
+            <button class="btn btn-outline-primary">Speichern</button>
+        </form>{% endif %}</td>
+    </tr>{% endfor %}
+    <tr><td>Nicht zugeordnet / Konflikt</td><td class="text-end">{{ unknown_totals.actual|floatformat:"2g" }} €</td><td class="text-end">{{ unknown_totals.commitment|floatformat:"2g" }} €</td><td></td></tr>
+    </tbody>
+</table></div>
+{% endblock %}

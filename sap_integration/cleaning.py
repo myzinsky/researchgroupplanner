@@ -22,6 +22,11 @@ def clean_transactions(transactions):
             grouped[key]["amount"] = Decimal(transaction["amount"])
         else:
             grouped[key]["amount"] += Decimal(transaction["amount"])
+        # A display group can contain several financial positions. Keep every
+        # contributing code instead of showing only the first source row's code.
+        positions = set(grouped[key].get("financial_positions", []))
+        positions.update(transaction.get("financial_positions", [transaction.get("financial_position") or ""]))
+        grouped[key]["financial_positions"] = sorted(positions)
 
     return [
         transaction

@@ -1,0 +1,63 @@
+{% extends "controlling/base.html" %}
+{% load django_bootstrap5 %}
+{% block title %}Ausgabenkategorien nach Finanzposition{% endblock %}
+{% block heading %}Ausgabenkategorien nach Finanzposition{% endblock %}
+{% block content %}
+<p><a href="{% url 'sap_integration:overview' %}">← Zum Ist-Stand</a></p>
+<p>Mehrere Finanzpositionen können dieselbe Kategorie bilden. Reise- und Sachmittelkategorien werden je Fonds einem Projektbudget zugeordnet. Personalkategorien dienen der Einordnung und werden weiterhin über den Gehaltsabgleich behandelt. Diese Regeln ändern keine bereits bestätigten Planungswerte.</p>
+<div class="d-flex gap-2 flex-wrap mb-3">
+    <a class="btn btn-outline-primary" href="{% url 'sap_integration:expense_categories_export' %}">Konfiguration exportieren</a>
+    {% if local_templates_available %}<form method="post">{% csrf_token %}<button class="btn btn-outline-secondary" name="action" value="defaults">Lokale Kategorienvorlage prüfen</button></form>{% endif %}
+</div>
+<div class="table-responsive"><table class="table table-bordered">
+    <thead><tr><th>Kategorie / Kennung</th><th>Kostenart</th><th>Finanzpositionen</th><th>Muster</th><th>Aktiv</th><th></th></tr></thead>
+    <tbody>{% for category in categories %}<tr>
+        <td>{{ category.label }}<br><small class="text-muted">{{ category.key }}</small></td>
+        <td>{{ category.get_kind_display }}</td>
+        <td>{{ category.exact_codes|join:", " }}</td><td>{{ category.patterns|join:", " }}</td>
+        <td>{{ category.is_active|yesno:"Ja,Nein" }}</td>
+        <td><a href="?edit={{ category.key }}">Bearbeiten</a></td>
+    </tr>{% empty %}<tr><td colspan="6">Noch keine Kategorien. Importiere eine Kategorienkonfiguration oder lege eigene Kategorien an.{% if local_templates_available %} Über „Lokale Kategorienvorlage prüfen“ kannst du die lokal hinterlegten Regeln übernehmen.{% endif %}</td></tr>{% endfor %}</tbody>
+</table></div>
+<div class="row g-4 mt-2">
+    <div class="col-lg-7">
+        <h2 class="h4">{% if editing %}{{ editing.label }} bearbeiten{% else %}Kategorie hinzufügen{% endif %}</h2>
+        <form method="post">{% csrf_token %}{% bootstrap_form category_form %}
+            <button class="btn btn-outline-primary" name="action" value="check">Regeln prüfen</button>
+            <button class="btn btn-primary" name="action" value="save">Speichern</button>
+            {% if editing %}<a class="btn btn-link" href="{% url 'sap_integration:expense_categories' %}">Neue Kategorie</a>{% endif %}
+        </form>
+    </div>
+    <div class="col-lg-5">
+        <h2 class="h4">Konfiguration importieren</h2>
+        <p>Überträgt Kategorien und Regeln. Die Projektbudgets ordnet jede Installation selbst zu. Bestehende, nicht enthaltene Kategorien bleiben erhalten.</p>
+        <form method="post" enctype="multipart/form-data">{% csrf_token %}{% bootstrap_form upload_form %}
+            <button class="btn btn-outline-primary" name="action" value="upload">Importvorschau öffnen</button>
+        </form>
+    </div>
+</div>
+{% if preview is not None %}
+<section class="card my-4"><div class="card-body">
+    <h2 class="h4">Importvorschau</h2>
+    <p>Neue Kategorien werden hinzugefügt. Bei Konflikten bleibt die bestehende Regel erhalten, sofern du „Ersetzen“ nicht auswählst.</p>
+    <form method="post">{% csrf_token %}<input type="hidden" name="preview_token" value="{{ preview_token }}">
+        <div class="table-responsive"><table class="table table-bordered"><thead><tr><th>Kategorie</th><th>Bisher</th><th>Import</th><th>Aktion</th></tr></thead><tbody>
+        {% for row in preview %}<tr>
+            <td>{{ row.incoming.label }}<br><small>{{ row.incoming.key }}</small></td>
+            <td>{% if row.existing %}{{ row.existing.label }}<br>{{ row.existing.exact_codes|join:", " }}<br>{{ row.existing.patterns|join:", " }}<br>{{ row.existing.kind }} · {{ row.existing.is_active|yesno:"aktiv,inaktiv" }}{% else %}–{% endif %}</td>
+            <td>{{ row.incoming.exact_codes|join:", " }}<br>{{ row.incoming.patterns|join:", " }}<br>{{ row.incoming.kind }} · {{ row.incoming.is_active|yesno:"aktiv,inaktiv" }}</td>
+            <td>{% if row.status == 'conflict' %}<label><input type="checkbox" name="replace" value="{{ row.incoming.key }}"> Ersetzen</label>{% elif row.status == 'new' %}Hinzufügen{% else %}Unverändert{% endif %}</td>
+        </tr>{% empty %}<tr><td colspan="4">Die Datei enthält keine Kategorien.</td></tr>{% endfor %}
+        </tbody></table></div>
+        <button class="btn btn-primary" name="action" value="import">Ausgewählte Konfiguration übernehmen</button>
+    </form>
+</div></section>
+{% endif %}
+<h2 class="h4 mt-4">Treffer in vorhandenen SAP-Exporten</h2>
+<p>Exakte Nummern haben Vorrang vor Mustern. Mehrere Treffer derselben Rangstufe sperren die Übernahme. Nach „Regeln prüfen“ zeigt diese Tabelle die vorgeschlagene Regeländerung.</p>
+{% if preview is not None %}<p class="text-muted">Diese Vorschau zeigt die Wirkung aller importierten Regeln, einschließlich der optionalen Ersetzungen bei Konflikten.</p>{% endif %}
+<div class="table-responsive"><table class="table table-sm table-bordered"><thead><tr><th>Finanzposition</th><th>Zuordnung</th></tr></thead><tbody>
+{% for match in rule_matches %}<tr{% if match.conflict %} class="table-danger"{% endif %}><td>{{ match.code }}</td><td>{% if match.conflict %}Konflikt: {{ match.matches }}{% elif match.category %}{{ match.category }}{% if match.category.kind == 'staff' %} <span class="text-muted">(Personal · Gehaltsabgleich)</span>{% endif %}{% elif match.is_income %}Einnahmen / Mittelzuflüsse (keine Ausgabenkategorie erforderlich){% else %}Nicht in der hinterlegten Kategorienliste{% endif %}</td></tr>
+{% empty %}<tr><td colspan="2">Noch keine Finanzpositionen aufbereitet. Vorhandene Rohdateien können ohne Download mit parse_sap erneut aufbereitet werden.</td></tr>{% endfor %}
+</tbody></table></div>
+{% endblock %}

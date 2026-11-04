@@ -1,0 +1,45 @@
+{% extends "controlling/base.html" %}
+{% load django_bootstrap5 l10n %}
+{% block title %}SAP-Ausgabe {{ check.row.document_number }}{% endblock %}
+{% block heading %}SAP-Ausgabe {{ check.row.document_number }}{% endblock %}
+{% block content %}
+<p><a href="{% url 'sap_integration:expenses' fund.id %}?year={{ year|unlocalize }}">← Zum Ausgabenabgleich</a></p>
+<p>{{ fund.project|default:fund }} · Fonds {{ fund.fund_number }} · {{ check.source_label }} · <strong>{{ check.amount|floatformat:"2g" }} €</strong></p>
+<p>{{ check.description }}<br>{{ check.row.business_partner }} · Finanzposition {{ check.row.financial_position }} · {{ check.category|default:"Kategorie nicht zugeordnet" }}</p>
+{% for reason in check.blocking %}<div class="alert alert-danger">{{ reason }}</div>{% endfor %}
+{% for note in check.notes %}<div class="alert alert-info">{{ note }}</div>{% endfor %}
+<div class="table-responsive"><table class="table table-sm table-bordered">
+    <thead><tr><th>Quellzeile</th><th>Datum</th><th>FI-Beleg / Art</th><th>Referenz / Storno</th><th>Einkaufsbeleg / Position</th><th>Sachkonto</th><th>Beschreibung</th><th>Betrag</th></tr></thead>
+    <tbody>{% for row in check.rows %}<tr><td>{{ row.source_row|default:"–" }}</td><td>{{ row.booking_date }}</td><td>{{ row.document_number }} / {{ row.document_type }}</td><td>{{ row.reference }}<br>{{ row.reversal_document }}</td><td>{{ row.purchase_document }} / {{ row.document_item }}</td><td>{{ row.gl_account }}</td><td>{{ row.header_text }}<br>{{ row.item_text }}</td><td class="text-end text-nowrap">{{ row.amount }} €</td></tr>{% endfor %}</tbody>
+</table></div>
+{% if check.link %}
+<p>Verknüpft mit: <strong>{{ check.link.planner_transaction }}</strong><br>{{ check.link.planner_transaction.description }}<br>
+</p>
+{% endif %}
+{% if candidates %}<h2 class="h5">Mögliche vorhandene Planungseinträge</h2><ul>{% for candidate in candidates %}<li>{{ candidate.entry.date|date:"d.m.Y" }} · {{ candidate.entry.amount|floatformat:"2g" }} € · {{ candidate.entry.budget_item.title }} · {{ candidate.entry.description }}</li>{% endfor %}</ul><p class="small text-muted">Vorschläge anhand von Betrag und Text. Bitte den passenden Eintrag im Formular selbst auswählen.</p>{% endif %}
+{% if check.can_apply %}
+<h2 class="h4 mt-4">Planung mit SAP abgleichen</h2>
+<p>Wähle den passenden Planungseintrag aus. Mit „In Planung übernehmen“ werden Betrag, Buchungsdatum, Beschreibung und SAP-Referenz direkt aktualisiert. Das Budget des Eintrags bleibt erhalten.</p>
+<p>Beispiel: Aus einer mit 1.000 € geplanten Reise werden die tatsächlich gebuchten 850 €. Wenn die Ausgabe noch nicht geplant ist, wähle „neuen Eintrag anlegen“ und das gewünschte Planungsbudget.</p>
+<form method="post" class="mb-4">{% csrf_token %}
+    <input type="hidden" name="state_token" value="{{ state_token }}">
+    {% bootstrap_form_errors apply_form %}
+    {% bootstrap_field apply_form.planner_transaction %}
+    <div id="expense-new-budget"{% if apply_form.planner_transaction.value and not apply_form.budget_item.errors %} hidden{% endif %}>
+        {% bootstrap_field apply_form.budget_item %}
+    </div>
+    <button class="btn btn-primary" name="action" value="apply">In Planung übernehmen</button>
+</form>
+<script>
+    document.addEventListener('DOMContentLoaded', function () {
+        var selection = document.getElementById('{{ apply_form.planner_transaction.id_for_label|escapejs }}');
+        var budget = document.getElementById('expense-new-budget');
+        if (!selection || !budget) return;
+        function updateBudgetVisibility() { budget.hidden = Boolean(selection.value); }
+        selection.addEventListener('change', updateBudgetVisibility);
+        updateBudgetVisibility();
+    });
+</script>
+{% else %}<p class="text-muted">Für diese Buchung ist derzeit keine Übernahme freigegeben. Bitte die Zuordnung oder Belegidentität klären.</p>{% endif %}
+{% if audit_entries %}<h2 class="h5 mt-4">Übernahmen</h2><ul>{% for entry in audit_entries %}<li>{{ entry.created_at|date:"d.m.Y H:i" }} · {{ entry.user|default:"Gelöschter Benutzer" }} · {% if entry.action == 'link' %}Verknüpft{% else %}Übernommen{% endif %} · {{ entry.after.main.amount }} €</li>{% endfor %}</ul>{% endif %}
+{% endblock %}

@@ -33,6 +33,7 @@ from projects.utils import (
     calculate_salary_for_allocation,
 )
 from sap_integration.cache import SAPCacheError
+from sap_integration.config import financial_positions_enabled
 from sap_integration.salary_sync import (
     apply_salary_comparison,
     build_salary_comparisons,
@@ -569,6 +570,10 @@ def warnings(request):
         warnings_list.extend(_sap_actual_salary_warnings())
 
     if settings.SAP_ENABLED:
+        from sap_integration.expenses import expense_warnings
+
+        if financial_positions_enabled():
+            warnings_list.extend(expense_warnings(settings.SAP_DATA_DIR))
         try:
             salary_result = build_salary_comparisons(settings.SAP_DATA_DIR)
         except (OSError, ValueError, SAPCacheError) as error:

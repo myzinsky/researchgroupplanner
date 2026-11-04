@@ -61,6 +61,7 @@
     {% endif %}
 
     {% if sap_webgui_enabled %}
+    {% if sap_financial_positions_enabled %}<p><a class="btn btn-outline-primary" href="{% url 'sap_integration:expense_categories' %}">Ausgabenkategorien verwalten / importieren</a></p>{% endif %}
     {% if sap_gm_import_enabled %}<h2 class="h4">Geschäftsjahre</h2>{% endif %}
     <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-3">
         {% if selected_year %}
@@ -117,6 +118,7 @@
                             <td>
                                 <a href="{% url 'sap_integration:fund_detail' selected_year row.fund.id %}">{{ row.fund.fund_number }}</a>
                                 {% if row.fund.label %}<div class="small text-muted">{{ row.fund.label }}</div>{% endif %}
+                                {% if sap_financial_positions_enabled and row.fund.project_id %}<div><a href="{% url 'sap_integration:expenses' row.fund.id %}?year={{ selected_year|unlocalize }}">Reisen und Sachmittel abgleichen</a></div>{% endif %}
                                 {% if row.is_adjusted %}
                                     <div><span class="badge text-bg-success">Mittelzuflüsse bereinigt</span></div>
                                 {% endif %}

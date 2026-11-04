@@ -274,6 +274,9 @@ def other_budget_items(request: HttpRequest, acronym: str):
     years = {int(year) for year in project.get_years()}
 
     positions = _sap_positions(project)
+    from sap_integration.expenses import expense_planning_annotations
+
+    wuerzburg = expense_planning_annotations(project)
 
     budget_items = list(project.otherbudgetitem_set.order_by("title"))
     for item in budget_items:
@@ -287,6 +290,11 @@ def other_budget_items(request: HttpRequest, acronym: str):
             transaction.sap_links = [(reference, positions.get(reference, (None,))[0]) for reference in refs]
             status, transaction.sap_actual = _sap_status([positions[r][1] for r in refs if r in positions])
             transaction.sap_status = SAP_STATUS_LABELS[status]
+            if transaction.id in wuerzburg:
+                annotation = wuerzburg[transaction.id]
+                transaction.sap_links = [(annotation["reference"], annotation["url"])]
+                transaction.sap_actual = annotation["actual"]
+                transaction.sap_status = SAP_STATUS_LABELS[annotation["status"]]
         item.used = sum((t.amount for t in item.transactions if t.counts), Decimal("0.00"))
         item.actual = sum((t.sap_actual or Decimal("0.00") for t in item.transactions if t.counts), Decimal("0.00"))
         item.remain = item.amount - item.used

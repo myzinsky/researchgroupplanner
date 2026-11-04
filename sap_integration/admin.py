@@ -5,7 +5,10 @@ from sap_integration.models import (
     SAPIgnoredPosition,
     SAPImport,
     SAPPersonMapping,
+    SAPExpenseCategory,
+    SAPExpenseBudgetMapping,
 )
+from sap_integration.forms import ExpenseCategoryForm
 
 
 @admin.register(SAPImport)
@@ -32,3 +35,22 @@ class SAPIgnoredPositionAdmin(admin.ModelAdmin):
     list_display = ("fund", "reference", "note", "created_by", "created_at")
     list_filter = ("fund",)
     search_fields = ("reference", "note")
+
+
+@admin.register(SAPExpenseCategory)
+class SAPExpenseCategoryAdmin(admin.ModelAdmin):
+    form = ExpenseCategoryForm
+    list_display = ("key", "label", "kind", "is_active")
+    list_filter = ("kind", "is_active")
+    search_fields = ("key", "label")
+
+
+@admin.register(SAPExpenseBudgetMapping)
+class SAPExpenseBudgetMappingAdmin(admin.ModelAdmin):
+    list_display = ("fund", "category", "budget_item")
+    list_filter = ("fund",)
+
+    def formfield_for_foreignkey(self, db_field, request, **kwargs):
+        if db_field.name == "category":
+            kwargs["queryset"] = SAPExpenseCategory.objects.exclude(kind="staff")
+        return super().formfield_for_foreignkey(db_field, request, **kwargs)

@@ -463,6 +463,20 @@ class ReconciliationViewTests(ReconciliationTestBase):
         response = self.client.get(reverse("warnings"))
         self.assertContains(response, "SAP-Abgleich: GMTEST")
 
+    def test_missing_gm_travel_is_reported_without_financial_position_ui(self):
+        self.assertEqual(self.check("8000001").status, Status.MISSING)
+        response = self.client.get(reverse("warnings"))
+        gm_warning = next(w for w in response.context["warnings_list"] if w["title"] == "SAP-Abgleich: GMTEST")
+        self.assertIn("fehlen in der Planung", gm_warning["detail"])
+        response = self.client.get(gm_warning["link"])
+        self.assertContains(response, "Reisen")
+        self.assertNotContains(response, "data-financial-position-info")
+        self.assertNotContains(response, "Reisen und Sachmittel abgleichen")
+        with override_settings(SAP_ENABLED=True):
+            response = self.client.get(gm_warning["link"])
+        self.assertNotContains(response, "data-financial-position-info")
+        self.assertNotContains(response, "Reisen und Sachmittel abgleichen")
+
     def test_overview_without_webgui_shows_only_project_exports(self):
         response = self.client.get(reverse("sap_integration:overview"))
         self.assertContains(response, "Projektexporte (Grants Management)")

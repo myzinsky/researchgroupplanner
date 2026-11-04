@@ -15,6 +15,7 @@
             </div>
         </div>
         <div class="d-flex flex-wrap gap-2">
+            {% if sap_financial_positions_enabled and fund.project_id %}<a class="btn btn-outline-primary" href="{% url 'sap_integration:expenses' fund.id %}?year={{ year|unlocalize }}">Reisen und Sachmittel abgleichen</a>{% endif %}
             {% if is_clean %}
                 <a class="btn btn-outline-primary"
                    href="{% url 'sap_integration:fund_detail' year fund.id %}">Original anzeigen</a>
@@ -96,6 +97,7 @@
         <table class="table table-bordered table-hover align-middle">
             <thead class="table-light">
                 <tr>
+                    {% if sap_financial_positions_enabled %}<th>Finanzposition</th>{% endif %}
                     <th>Geschäftspartner</th>
                     <th>Position</th>
                     <th class="text-end">Bezahlt</th>
@@ -105,6 +107,25 @@
             <tbody>
                 {% for transaction in values.transactions %}
                     <tr{% if transaction.is_funding %} class="table-success"{% elif transaction.type == "commitment" %} class="table-secondary"{% endif %}>
+                        {% if sap_financial_positions_enabled %}<td>
+                            {% for info in transaction.financial_position_info %}
+                                <div class="text-nowrap">
+                                    {% if info.code %}
+                                        <code>{{ info.code }}</code>
+                                        <button type="button" class="btn btn-link btn-sm p-0 ms-1 text-secondary"
+                                                data-financial-position-info
+                                                title="{{ info.description }}"
+                                                aria-label="Finanzposition {{ info.code }}: {{ info.description }}">
+                                            <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                                                <circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.3"/>
+                                                <circle cx="8" cy="4.7" r="0.9" fill="currentColor"/>
+                                                <path d="M8 7v4.5" fill="none" stroke="currentColor" stroke-width="1.5"/>
+                                            </svg>
+                                        </button>
+                                    {% else %}<span class="text-muted">–</span>{% endif %}
+                                </div>
+                            {% endfor %}
+                        </td>{% endif %}
                         <td>{{ transaction.business_partner|default:"" }}</td>
                         <td>
                             {{ transaction.position }}
@@ -120,28 +141,36 @@
                         </td>
                     </tr>
                 {% empty %}
-                    <tr><td colspan="4" class="text-center text-muted">Keine Buchungen für diesen Fonds vorhanden.</td></tr>
+                    <tr><td colspan="{% if sap_financial_positions_enabled %}5{% else %}4{% endif %}" class="text-center text-muted">Keine Buchungen für diesen Fonds vorhanden.</td></tr>
                 {% endfor %}
             </tbody>
             <tfoot class="fw-bold">
                 {% if is_clean and values.funding_total %}
                     <tr class="table-success">
-                        <td colspan="2">Mittelzuflüsse (nicht eingerechnet)</td>
+                        <td colspan="{% if sap_financial_positions_enabled %}3{% else %}2{% endif %}">Mittelzuflüsse (nicht eingerechnet)</td>
                         <td class="text-end">{{ values.funding_total|floatformat:"2g" }} €</td>
                         <td></td>
                     </tr>
                 {% endif %}
                 <tr>
-                    <td colspan="2">Summe</td>
+                    <td colspan="{% if sap_financial_positions_enabled %}3{% else %}2{% endif %}">Summe</td>
                     <td class="text-end">{{ values.actual_total|floatformat:"2g" }} €</td>
                     <td class="text-end table-secondary">{{ values.commitments_total|floatformat:"2g" }} €</td>
                 </tr>
                 <tr>
-                    <td colspan="3">Ist + Obligo</td>
+                    <td colspan="{% if sap_financial_positions_enabled %}4{% else %}3{% endif %}">Ist + Obligo</td>
                     <td class="text-end">{{ values.combined_total|floatformat:"2g" }} €</td>
                 </tr>
             </tfoot>
         </table>
     </div>
     {% if generated_at %}<p class="small text-muted">Datenstand: {{ generated_at|date:"d.m.Y H:i" }} Uhr</p>{% endif %}
+    {% if sap_financial_positions_enabled %}<script>
+        document.addEventListener('DOMContentLoaded', function () {
+            if (!window.bootstrap || !bootstrap.Tooltip) return;
+            document.querySelectorAll('[data-financial-position-info]').forEach(function (element) {
+                new bootstrap.Tooltip(element, {container: 'body', trigger: 'hover focus'});
+            });
+        });
+    </script>{% endif %}
 {% endblock %}
