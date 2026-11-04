@@ -56,6 +56,32 @@
             color: #ffffff !important;
         }
 
+        /* Printing: <div class="print-page-break"></div> after a table starts a new page. */
+        @media print {
+            .print-page-break {
+                break-after: page;
+                page-break-after: always;
+            }
+
+            nav, form, .btn, .alert-dismissible, .no-print {
+                display: none !important;
+            }
+
+            tr, .timeline-scroll {
+                break-inside: avoid;
+                page-break-inside: avoid;
+            }
+
+            thead {
+                display: table-header-group;
+            }
+
+            h1, h2, h3, h4 {
+                break-after: avoid;
+                page-break-after: avoid;
+            }
+        }
+
     </style>
 
 </head>
@@ -82,6 +108,11 @@
                     <li class="nav-item">
                         <a class="nav-link" href="{% url 'staffing:index' %}">
                             Mitarbeiter
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="{% url 'staffing:rebookings' %}">
+                            Umbuchungen
                         </a>
                     </li>
                     {% if LANDESSTELLEN_ENABLED %}
@@ -142,7 +173,7 @@
 
         {% if messages %}
             {% for message in messages %}
-                <div class="alert alert-{% if message.tags == 'error' %}danger{% else %}{{ message.tags|default:'info' }}{% endif %}" role="alert">{{ message }}</div>
+                <div class="alert alert-{% if message.tags == 'error' %}danger{% else %}{{ message.tags|default:'info' }}{% endif %} mt-3" role="alert">{{ message }}</div>
             {% endfor %}
         {% endif %}
 

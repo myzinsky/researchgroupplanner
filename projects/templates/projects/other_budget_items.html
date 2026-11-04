@@ -1,0 +1,129 @@
+{% extends "controlling/base.html" %}
+
+{% block title %}Sachmittel {{ project.acronym }}{% endblock %}
+{% block heading %}Sachmittel {{ project.acronym }}{% endblock %}
+
+{% block content %}
+<p><a href="{% url 'projects:details' project.acronym %}">← Zur Projektplanung</a></p>
+
+{% if budget_items %}
+    <h2>Übersicht</h2>
+    <table class="table table-bordered">
+        <thead>
+            <tr>
+                <th>Posten</th>
+                <th>Nutzung</th>
+                <th class="text-end">davon Ist</th>
+                <th class="text-end">Nicht allokiert</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in budget_items %}
+                <tr>
+                    <td><a href="#budget-{{ item.id }}">{{ item.title }}</a></td>
+                    <td>{% include "controlling/_budget_usage.html" with used=item.used budget=item.amount percent=item.usage_percent %}</td>
+                    <td class="text-end">€&nbsp;{{ item.actual }}</td>
+                    <td class="text-end{% if item.remain < 0 %} text-danger{% endif %}">€&nbsp;{{ item.remain }}</td>
+                </tr>
+            {% endfor %}
+        </tbody>
+        <tfoot>
+            <tr class="fw-bold">
+                <th scope="row">Summe</th>
+                <td>{% include "controlling/_budget_usage.html" with used=total_used budget=total_amount percent=total_percent %}</td>
+                <td class="text-end">€&nbsp;{{ total_actual }}</td>
+                <td class="text-end{% if total_remain < 0 %} text-danger{% endif %}">€&nbsp;{{ total_remain }}</td>
+            </tr>
+        </tfoot>
+    </table>
+    <div class="print-page-break"></div>
+
+    {% for item in budget_items %}
+        <h3 id="budget-{{ item.id }}" class="mt-4">{{ item.title }}</h3>
+        <table class="table table-bordered">
+            <thead>
+                <tr>
+                    <th>Datum</th>
+                    <th>Beschreibung</th>
+                    <th>SAP-Referenz</th>
+                    <th>Status</th>
+                    <th class="text-end">Betrag</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <th colspan="4">Budget</th>
+                    <th class="text-end">€&nbsp;{{ item.amount }}</th>
+                </tr>
+                {% for transaction in item.transactions %}
+                    <tr id="transaction-{{ transaction.id }}"{% if not transaction.counts %} class="text-muted"{% endif %}>
+                        <td>{{ transaction.date|date:"d.m.Y" }}</td>
+                        <td class="description-cell">
+                            <div class="description-view d-flex gap-2 align-items-start">
+                                <span class="description-text">{{ transaction.description_first }}{% if transaction.description_rest %}<br><em>{{ transaction.description_rest|linebreaksbr }}</em>{% endif %}</span>
+                                <button type="button" class="btn btn-sm btn-link p-0 ms-auto text-secondary description-edit" title="Beschreibung bearbeiten" aria-label="Beschreibung bearbeiten">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true"><path d="M12.146.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1 0 .708l-10 10a.5.5 0 0 1-.168.11l-5 2a.5.5 0 0 1-.65-.65l2-5a.5.5 0 0 1 .11-.168l10-10zM11.207 2.5 13.5 4.793 14.793 3.5 12.5 1.207 11.207 2.5zm1.586 3L10.5 3.207 4 9.707V10h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.293l6.5-6.5zm-9.761 5.175-.106.106-1.528 3.821 3.821-1.528.106-.106A.5.5 0 0 1 5 12.5V12h-.5a.5.5 0 0 1-.5-.5V11h-.5a.5.5 0 0 1-.468-.325z"/></svg>
+                                </button>
+                            </div>
+                            <form method="post" action="{% url 'projects:other_budget_transaction_description' project.acronym transaction.id %}" class="description-form d-none">
+                                {% csrf_token %}
+                                <textarea name="description" rows="2" class="form-control form-control-sm mb-1" aria-label="Beschreibung">{{ transaction.description|default:"" }}</textarea>
+                                <button type="submit" class="btn btn-sm btn-primary">Speichern</button>
+                                <button type="button" class="btn btn-sm btn-outline-secondary description-cancel">Abbrechen</button>
+                            </form>
+                            {% if not transaction.counts %}<span class="badge text-bg-secondary mt-1" title="Liegt außerhalb der Projektjahre und wird nicht mitgezählt">außerhalb Laufzeit</span>{% endif %}
+                        </td>
+                        <td>
+                            {% for reference, url in transaction.sap_links %}{% if url %}<a href="{{ url }}" title="Beleg im SAP-Abgleich öffnen">{{ reference }}</a>{% else %}{{ reference }}{% endif %}{% if not forloop.last %}, {% endif %}{% endfor %}
+                        </td>
+                        <td class="text-nowrap">
+                            <span class="badge {{ transaction.sap_status.1 }}" title="{{ transaction.sap_status.2 }}">{{ transaction.sap_status.0 }}</span>
+                            {% if transaction.sap_status.0 == "Ist + offen" %}<div class="small text-muted">Ist €&nbsp;{{ transaction.sap_actual }}</div>{% endif %}
+                        </td>
+                        <td class="text-end">€&nbsp;{{ transaction.amount }}</td>
+                    </tr>
+                {% empty %}
+                    <tr><td colspan="5" class="text-muted">Keine Planungseinträge.</td></tr>
+                {% endfor %}
+            </tbody>
+            <tfoot>
+                <tr class="fw-bold">
+                    <td colspan="4">Summe</td>
+                    <td class="text-end">€&nbsp;{{ item.used }}</td>
+                </tr>
+                <tr>
+                    <td colspan="4">davon Ist (in SAP bezahlt)</td>
+                    <td class="text-end">€&nbsp;{{ item.actual }}</td>
+                </tr>
+                <tr>
+                    <td colspan="4">Nicht allokiert</td>
+                    <td class="text-end{% if item.remain < 0 %} text-danger{% endif %}">€&nbsp;{{ item.remain }}</td>
+                </tr>
+            </tfoot>
+        </table>
+        {% if not forloop.last %}<div class="print-page-break"></div>{% endif %}
+    {% endfor %}
+{% else %}
+    <p class="text-muted">Für dieses Projekt sind keine Sachmittel-Budgetposten angelegt.</p>
+{% endif %}
+
+<script>
+    document.addEventListener('click', function (event) {
+        var cell = event.target.closest('.description-cell');
+        if (!cell) {
+            return;
+        }
+        var view = cell.querySelector('.description-view');
+        var form = cell.querySelector('.description-form');
+        if (event.target.closest('.description-edit')) {
+            view.classList.add('d-none');
+            form.classList.remove('d-none');
+            form.querySelector('textarea').focus();
+        } else if (event.target.closest('.description-cancel')) {
+            form.reset();
+            form.classList.add('d-none');
+            view.classList.remove('d-none');
+        }
+    });
+</script>
+{% endblock %}

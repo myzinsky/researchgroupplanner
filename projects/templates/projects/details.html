@@ -20,8 +20,19 @@
     </tr>
     <tr>
         <th>Budget:</th>
-        <td>€&nbsp;{{ project.budget_total }} (€&nbsp;{{ allocated_sum }} allokiert, €&nbsp;{{ remain_sum }} nicht allokiert)</td>
+        <td>
+            €&nbsp;{{ project.budget_total }} (€&nbsp;{{ allocated_sum }} allokiert, €&nbsp;{{ remain_sum }} nicht allokiert)
+            {% if rebooked_allocated is not None %}<div class="small text-muted">(Umbuchungen: €&nbsp;{{ rebooked_allocated }} allokiert{% if rebooked_remain is not None %}, €&nbsp;{{ rebooked_remain }} nicht allokiert{% endif %})</div>{% endif %}
+        </td>
     </tr>
+    {% if reporting %}
+    <tr>
+        <th>Berichtszeiträume:</th>
+        <td>
+            {% for period in reporting.periods %}<div>{{ period.label }}</div>{% endfor %}
+        </td>
+    </tr>
+    {% endif %}
     {% if project.no_overhead %}
     <tr>
         <th>Overhead:</th>
@@ -29,8 +40,12 @@
     </tr>
     {% endif %}
 </table>
+<div class="print-page-break"></div>
 
-<h2>Budgetposten</h2>
+<div class="d-flex justify-content-between align-items-center">
+    <h2>Budgetposten</h2>
+    <a class="btn btn-sm btn-outline-primary" href="{% url 'projects:other_budget_items' project.acronym %}">Sachmittel-Übersicht</a>
+</div>
 
 <table class="table table-bordered" style="height: 100px;">
     <thead>
@@ -52,16 +67,16 @@
             <tr>
                 <td>{{ budget.title }}</td>
                 <td>€&nbsp;{{ budget.amount }}</td>
-                {% for year, amount in budget.years.items %}
-                    <td>€&nbsp;{{ amount }}</td>
+                {% for amount, pm, rebooked, rebooked_pm in budget.year_cells %}
+                    <td>€&nbsp;{{ amount }}<div class="small text-muted">{{ pm|floatformat:1 }}&nbsp;PM</div>{% if rebooked is not None %}<div class="small text-muted fw-normal text-nowrap" title="Mit offenen Umbuchungen">(€&nbsp;{{ rebooked }} · {{ rebooked_pm|floatformat:1 }}&nbsp;PM)</div>{% endif %}</td>
                 {% endfor %}
-                <td>€&nbsp;{{ budget.projected_sum }}</td>
-                <td>€&nbsp;{{ budget.remain }}</td>
+                <td>€&nbsp;{{ budget.projected_sum }}<div class="small text-muted">{{ budget.pm_total|floatformat:1 }}&nbsp;PM</div>{% if budget.rebooked_sum %}<div class="small text-muted text-nowrap">(Umbuchungen: €&nbsp;{{ budget.rebooked_sum }} · {{ budget.rebooked_pm|floatformat:1 }}&nbsp;PM)</div>{% endif %}</td>
+                <td>€&nbsp;{{ budget.remain }}{% if budget.rebooked_sum %}<div class="small text-muted text-nowrap">(Umbuchungen: €&nbsp;{{ budget.rebooked_remain }})</div>{% endif %}</td>
             </tr>
         {% endfor %}
         {% for budget in other_budget_items %}
             <tr>
-                <td>{{ budget.title }}</td>
+                <td><a href="{% url 'projects:other_budget_items' project.acronym %}#budget-{{ budget.id }}">{{ budget.title }}</a></td>
                 <td>€&nbsp;{{ budget.amount }}</td>
                 {% for year, amount in budget.years.items %}
                     <td>€&nbsp;{{ amount }}</td>
@@ -71,7 +86,54 @@
             </tr>
         {% endfor %}
     </tbody>
+    <tfoot>
+        <tr class="fw-bold">
+            <th scope="row">Summe</th>
+            <td>€&nbsp;{{ budget_totals.amount }}</td>
+            {% for amount, pm, rebooked, rebooked_pm in budget_totals.year_cells %}
+                <td>€&nbsp;{{ amount }}<div class="small text-muted fw-normal">{{ pm|floatformat:1 }}&nbsp;PM</div>{% if rebooked is not None %}<div class="small text-muted fw-normal text-nowrap" title="Mit offenen Umbuchungen">(€&nbsp;{{ rebooked }} · {{ rebooked_pm|floatformat:1 }}&nbsp;PM)</div>{% endif %}</td>
+            {% endfor %}
+            <td>€&nbsp;{{ budget_totals.projected }}<div class="small text-muted fw-normal">{{ budget_totals.pm_total|floatformat:1 }}&nbsp;PM</div>{% if budget_totals.rebooked_projected is not None %}<div class="small text-muted fw-normal text-nowrap">(Umbuchungen: €&nbsp;{{ budget_totals.rebooked_projected }} · {{ budget_totals.rebooked_pm|floatformat:1 }}&nbsp;PM)</div>{% endif %}</td>
+            <td>€&nbsp;{{ budget_totals.remain }}{% if budget_totals.rebooked_remain is not None %}<div class="small text-muted fw-normal text-nowrap">(Umbuchungen: €&nbsp;{{ budget_totals.rebooked_remain }})</div>{% endif %}</td>
+        </tr>
+    </tfoot>
 </table>
+<div class="print-page-break"></div>
+
+{% if reporting %}
+<h2>Berichtszeiträume</h2>
+
+<table class="table table-bordered">
+    <thead>
+        <tr>
+            <th scope="col">Posten</th>
+            {% for period in reporting.periods %}
+                <th scope="col">{% if period.title %}{{ period.title }}<br>{% endif %}<span class="fw-normal small">{{ period.start_date|date:"d.m.Y" }} – {{ period.end_date|date:"d.m.Y" }}</span></th>
+            {% endfor %}
+        </tr>
+    </thead>
+    <tbody>
+        {% for row in reporting.rows %}
+            <tr>
+                <td>{{ row.title }}</td>
+                {% for amount, pm, rebooked, rebooked_pm in row.cells %}
+                    <td>€&nbsp;{{ amount }}{% if row.staff %}<div class="small text-muted">{{ pm|floatformat:1 }}&nbsp;PM</div>{% endif %}{% if rebooked is not None %}<div class="small text-muted fw-normal text-nowrap" title="Mit offenen Umbuchungen">(€&nbsp;{{ rebooked }} · {{ rebooked_pm|floatformat:1 }}&nbsp;PM)</div>{% endif %}</td>
+                {% endfor %}
+            </tr>
+        {% endfor %}
+    </tbody>
+    <tfoot>
+        <tr class="fw-bold">
+            <th scope="row">Summe</th>
+            {% for amount, pm, rebooked, rebooked_pm in reporting.totals %}
+                <td>€&nbsp;{{ amount }}<div class="small text-muted fw-normal">{{ pm|floatformat:1 }}&nbsp;PM</div>{% if rebooked is not None %}<div class="small text-muted fw-normal text-nowrap" title="Mit offenen Umbuchungen">(€&nbsp;{{ rebooked }} · {{ rebooked_pm|floatformat:1 }}&nbsp;PM)</div>{% endif %}</td>
+            {% endfor %}
+        </tr>
+    </tfoot>
+</table>
+<p class="text-muted small">Personalkosten in angebrochenen Monaten tagesanteilig; Sachmittel nach Buchungsdatum.</p>
+<div class="print-page-break"></div>
+{% endif %}
 
 <h2 id="timeline">Staffing</h2>
 <link rel="stylesheet" href="{% static 'vendor/vis-timeline/vis-timeline-graph2d.min.css' %}">
@@ -108,6 +170,27 @@
 
     .vis-item {
         font-size: 0.85rem;
+        cursor: pointer;
+    }
+
+    .vis-item.vis-background.reporting-period {
+        background-color: rgba(111, 66, 193, 0.08);
+        border-left: 1px dashed rgba(111, 66, 193, 0.5);
+        border-right: 1px dashed rgba(111, 66, 193, 0.5);
+    }
+
+    .vis-item.vis-background.reporting-period .vis-item-content {
+        color: #6f42c1 !important;
+        font-size: 0.75rem;
+    }
+
+    .vis-labelset .vis-label a {
+        color: inherit;
+        text-decoration: none;
+    }
+
+    .vis-labelset .vis-label a:hover {
+        text-decoration: underline;
     }
 
     .vis-label {
@@ -178,21 +261,35 @@
         var groups = [];
         var items = [];
         var existingGroups = {};
+        var links = {};
 
 {% for assignment in timeline_assignments %}
         var groupId = 'employee_{{ forloop.counter0 }}_{{ assignment.employee|slugify }}';
         if (!existingGroups['{{ assignment.employee|escapejs }}']) {
-            groups.push({ id: groupId, content: '{{ assignment.employee|escapejs }}' });
+            groups.push({ id: groupId, content: '<a href="{% url "staffing:details" assignment.employee.id %}">{{ assignment.employee|escapejs }}</a>' });
             existingGroups['{{ assignment.employee|escapejs }}'] = groupId;
         }
+        links['assignment_{{ forloop.counter0 }}'] = '{% url "staffing:details" assignment.employee.id %}';
 
         items.push({
             id: 'assignment_{{ forloop.counter0 }}',
             group: existingGroups['{{ assignment.employee|escapejs }}'],
-            content: '{{ assignment.category|escapejs }}',
-            title: '<strong>{{ assignment.employee|escapejs }}</strong><br>{{ assignment.category|escapejs }}',
+            content: '{% if assignment.rebooking %}{{ assignment.rebooking_label|escapejs }}{% else %}{{ assignment.category|escapejs }}{% if assignment.status != "contract" %} ({{ assignment.status_label|escapejs }}){% endif %}{% endif %}',
+            className: 'status-{{ assignment.status }}{% if assignment.rebooking == "in" %} allocation-rebook{% elif assignment.rebooking == "out" %} allocation-rebook-out{% endif %}',
+            title: '<strong>{{ assignment.employee|escapejs }}</strong><br>{{ assignment.category|escapejs }}{% if assignment.rebooking %}<br>{{ assignment.rebooking_title|escapejs }}{% endif %}',
             start: gpBuildDate({{ assignment.start|date:"Y" }}, {{ assignment.start|date:"n" }}, {{ assignment.start|date:"j" }}),
             end: gpBuildDate({{ assignment.end|date:"Y" }}, {{ assignment.end|date:"n" }}, {{ assignment.end|date:"j" }})
+        });
+{% endfor %}
+
+{% for period in reporting.periods %}
+        items.push({
+            id: 'reporting_period_{{ period.id }}',
+            content: '{{ period.title|default:"Berichtszeitraum"|escapejs }}',
+            start: gpBuildDate({{ period.start_date|date:"Y" }}, {{ period.start_date|date:"n" }}, {{ period.start_date|date:"j" }}),
+            end: gpBuildDate({{ period.end_date|date:"Y" }}, {{ period.end_date|date:"n" }}, {{ period.end_date|date:"j" }} + 1),
+            type: 'background',
+            className: 'reporting-period'
         });
 {% endfor %}
 
@@ -214,8 +311,9 @@
             window.__gpSingleLetterMonthsConfigured = true;
         }
 
-        new vis.Timeline(container, items, groups, {
-            stack: false,
+        var timeline = new vis.Timeline(container, items, groups, {
+            // Stack overlapping bars of a person, e.g. rebooked parts of an allocation.
+            stack: true,
             min: windowRange.min,
             max: windowRange.max,
             start: windowRange.start,
@@ -244,11 +342,27 @@
             },
             tooltip: { followMouse: false, overflowMethod: 'flip' },
         });
+
+        timeline.on('select', function (properties) {
+            if (!properties.items || !properties.items.length) {
+                return;
+            }
+            var target = links[properties.items[0]];
+            if (target) {
+                window.location.href = target;
+            }
+        });
     });
 </script>
+{% include "controlling/_employment_status_styles.html" %}
 <div id="timeline_scroll" class="timeline-scroll">
     <div id="timeline" class="timeline-shell"></div>
 </div>
+<div class="d-flex justify-content-between align-items-start">
+    {% include "controlling/_employment_status_legend.html" %}
+    <a class="btn btn-sm btn-outline-primary" href="{% url 'staffing:plan_employment' %}?project={{ project.acronym|urlencode }}">Anstellung planen</a>
+</div>
+<div class="print-page-break"></div>
 
 <h2>Personalbudgetmittel</h2>
 
@@ -264,16 +378,28 @@
     <tbody>
     {% for staffing in budget.staff_allocations %}
         <tr>
-            <td><a href="{% url 'staffing:details' staffing.allocation.employment.staff_member.id %}">{{ staffing.allocation.employment.staff_member }}</a><br/>({{ staffing.allocation.start_date }} - {{ staffing.allocation.end_date|default:staffing.allocation.employment.end_date }})</td>
-            <td style="text-align: right;">€&nbsp;{{ staffing.salary_sum }}</td>
+            <td><a href="{% url 'staffing:details' staffing.allocation.employment.staff_member.id %}">{{ staffing.allocation.employment.staff_member }}</a><br/>({{ staffing.allocation.start_date }} - {{ staffing.allocation.end_date|default:staffing.allocation.employment.end_date }})
+                {% for rebooking in staffing.outgoing_rebookings %}
+                    <div class="small text-muted">⇄ Umbuchung (offen) → {{ rebooking.budget_item.project.acronym }}: {{ rebooking.percentage|floatformat:"-2" }} % ({{ rebooking.start_date|date:"d.m.Y" }} – {{ rebooking.end|date:"d.m.Y" }})</div>
+                {% endfor %}
+            </td>
+            <td style="text-align: right;">€&nbsp;{{ staffing.salary_sum }}<div class="small text-muted">{{ staffing.pm_total|floatformat:1 }}&nbsp;PM</div></td>
+        </tr>
+    {% endfor %}
+    {% for incoming in budget.incoming_rebookings %}
+        <tr class="text-muted">
+            <td>⇄ Umbuchung (offen) ← {{ incoming.source_label }}: <a href="{% url 'staffing:details' incoming.rebooking.allocation.employment.staff_member_id %}">{{ incoming.rebooking.allocation.employment.staff_member }}</a>
+                <br/>({{ incoming.rebooking.start_date }} - {{ incoming.rebooking.end }}, {{ incoming.rebooking.percentage|floatformat:"-2" }} %)</td>
+            <td style="text-align: right;">(€&nbsp;{{ incoming.cost }})<div class="small">({{ incoming.pm|floatformat:1 }}&nbsp;PM)</div></td>
         </tr>
     {% endfor %}
         <tr>
             <td><strong>Summe:</strong></td>
-            <td style="text-align: right;">€&nbsp;{{ budget.projected_sum }}<br>(nicht allokiert: €&nbsp;{{ budget.remain }})</td>
+            <td style="text-align: right;">€&nbsp;{{ budget.projected_sum }} · {{ budget.pm_total|floatformat:1 }}&nbsp;PM<br>(nicht allokiert: €&nbsp;{{ budget.remain }}){% if budget.rebooked_sum is not None and budget.rebooked_sum != "" %}<div class="small text-muted">(Umbuchungen: €&nbsp;{{ budget.rebooked_sum }} · {{ budget.rebooked_pm|floatformat:1 }}&nbsp;PM, nicht allokiert: €&nbsp;{{ budget.rebooked_remain }})</div>{% endif %}</td>
         </tr>
     </tbody>
 </table>
+{% if not forloop.last %}<div class="print-page-break"></div>{% endif %}
 
 {% empty %}
 Keine Personalbudgetmittel vorhanden.

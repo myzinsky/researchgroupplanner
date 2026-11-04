@@ -1,11 +1,18 @@
 from decimal import Decimal
 from datetime import date, timedelta
+from .models import IgnoredWarning
 from .utils import render
 from dateutil.relativedelta import relativedelta
 
-from projects.models import AnnualPool, Landesstelle, OverheadBudgetItemShare, Project, StaffBudgetItem
+from projects.models import AnnualPool, Landesstelle, OverheadBudgetItemShare, Project, SAPFund, StaffBudgetItem
 from staffing.models import Employment, EmploymentSalaries, StaffFundingAllocation, StaffMember
-from staffing.utils import get_salaries_by_month
+from staffing.utils import (
+    get_salaries_by_month,
+    get_sap_actuals_by_month,
+    get_sap_correction_links,
+    employment_merge_candidates,
+    get_sap_salary_mismatches,
+)
 from django.conf import settings
 from django.contrib import messages
 from django.utils import timezone
@@ -16,10 +23,15 @@ from django.core.mail import send_mail
 from django.contrib.auth.decorators import login_required
 from django.contrib.admin.views.decorators import staff_member_required
 from django.shortcuts import get_object_or_404, redirect
+from django.urls import reverse
 from django.views.decorators.http import require_POST
 from django.db.models import Sum
 
-from projects.utils import calculate_salary_for_allocation
+from projects.utils import (
+    planned_expenses_by_year,
+    project_budget_overview,
+    calculate_salary_for_allocation,
+)
 from sap_integration.cache import SAPCacheError
 from sap_integration.salary_sync import (
     apply_salary_comparison,
@@ -305,6 +317,23 @@ def warnings(request):
                 "link": f"/projects/details/{project.acronym}/",
             })
 
+    # Back-to-back employments of a person that could be one.
+    for first, second, ok, reason in employment_merge_candidates(
+        Employment.objects.select_related("staff_member", "salary_category")
+    ):
+        warnings_list.append({
+            "severity": "info",
+            "title": f"Anstellungen zusammenführbar: {first.staff_member}" if ok
+            else f"Anschließende Anstellungen: {first.staff_member}",
+            "detail": (
+                f"{first.start_date} - {first.end_date} und {second.start_date} - {second.end_date} schließen direkt "
+                "aneinander an" + (" und können zu einer Anstellung zusammengeführt werden." if ok
+                                   else f", lassen sich aber nicht zusammenführen: {reason}")
+            ),
+            "link": f"/staffing/details/{first.staff_member.id}/",
+            "merge_employment_ids": (first.id, second.id) if ok else None,
+        })
+
     # 3) Overlapping salary periods per employment.
     for employment in Employment.objects.select_related("staff_member").prefetch_related("stafffundingallocation_set"):
         salaries = list(EmploymentSalaries.objects.filter(employment=employment).order_by("start_date", "end_date"))
@@ -533,6 +562,12 @@ def warnings(request):
                 "link": f"/staffing/details/{staff_member.id}/",
             })
 
+    if settings.SAP_GM_IMPORT_ENABLED:
+        reconciliations = _sap_reconciliations()
+        warnings_list.extend(_sap_reconciliation_warnings(reconciliations))
+        warnings_list.extend(_sap_obligo_warnings(reconciliations))
+        warnings_list.extend(_sap_actual_salary_warnings())
+
     if settings.SAP_ENABLED:
         try:
             salary_result = build_salary_comparisons(settings.SAP_DATA_DIR)
@@ -602,9 +637,131 @@ def warnings(request):
     severity_order = {"danger": 0, "warning": 1, "info": 2, "success": 3}
     warnings_list.sort(key=lambda item: (severity_order.get(item["severity"], 99), item["title"]))
 
+    ignored = {entry.key: entry for entry in IgnoredWarning.objects.select_related("created_by")}
+    ignored_list = []
+    active_list = []
+    for warning in warnings_list:
+        warning["key"] = IgnoredWarning.key_for(warning)
+        warning["ignored"] = ignored.get(warning["key"])
+        (ignored_list if warning["ignored"] else active_list).append(warning)
+
     return render(request, "controlling/warnings.html", {
-        "warnings_list": warnings_list,
+        "warnings_list": active_list,
+        "ignored_list": ignored_list,
     })
+
+
+@login_required
+@require_POST
+def ignore_warning(request):
+    key = request.POST.get("key", "")
+    comment = request.POST.get("comment", "").strip()
+    if not comment:
+        messages.error(request, "Bitte eine Begründung angeben, warum die Warnung ignoriert wird.")
+    elif len(key) == 64:
+        IgnoredWarning.objects.update_or_create(key=key, defaults={"comment": comment, "created_by": request.user})
+        messages.success(request, "Warnung wird ignoriert.")
+    return redirect("warnings")
+
+
+@login_required
+@require_POST
+def unignore_warning(request):
+    IgnoredWarning.objects.filter(key=request.POST.get("key", "")).delete()
+    messages.success(request, "Warnung wird wieder angezeigt.")
+    return redirect("warnings")
+
+
+def _sap_actual_salary_warnings():
+    """Planned salaries that differ from SAP actual payroll of the imported project exports."""
+    result_warnings = []
+    employments = Employment.objects.select_related("staff_member").prefetch_related(
+        "employmentsalaries_set", "stafffundingallocation_set"
+    )
+    for employment in employments:
+        allocations = list(employment.stafffundingallocation_set.all())
+        if not any(allocation.sap_reference for allocation in allocations):
+            continue
+        sap_actuals = get_sap_actuals_by_month(allocations)
+        mismatches = get_sap_salary_mismatches(get_salaries_by_month(employment), sap_actuals)
+        if not mismatches:
+            continue
+        result_warnings.append({
+            "severity": "warning",
+            "title": f"Gehalt weicht vom SAP-Ist ab: {employment.staff_member}",
+            "details": [
+                f"{mismatch['month']}: SAP {_decimal_2(mismatch['sap'])} EUR, "
+                f"Planung {_decimal_2(mismatch['planned'])} EUR "
+                f"(Differenz {_decimal_2(mismatch['difference'])} EUR)"
+                for mismatch in mismatches
+            ],
+            "link": f"/staffing/details/{employment.staff_member.id}/",
+            "correction_links": get_sap_correction_links(sap_actuals, mismatches),
+        })
+    return result_warnings
+
+
+def _sap_reconciliations():
+    """[(fund, reconciliation)] for all project funds with an imported export."""
+    from sap_integration.crosscheck import build_reconciliation
+
+    result = []
+    for fund in SAPFund.objects.filter(project__isnull=False, sap_imports__isnull=False).select_related("project").distinct():
+        reconciliation = build_reconciliation(fund)
+        if reconciliation is not None:
+            result.append((fund, reconciliation))
+    return result
+
+
+def _sap_reconciliation_warnings(reconciliations):
+    from sap_integration.crosscheck import Status
+
+    result_warnings = []
+    for fund, result in reconciliations:
+        if not result.open_checks:
+            continue
+        missing = sum(1 for check in result.open_checks if check.status == Status.MISSING)
+        mismatch = len(result.open_checks) - missing
+        result_warnings.append({
+            "severity": "warning",
+            "title": f"SAP-Abgleich: {fund.project.acronym}",
+            "detail": (
+                f"{missing} SAP-Position(en) fehlen in der Planung, {mismatch} weichen ab "
+                f"(Export bis {result.sap_import.last_booking:%d.%m.%Y})."
+            ),
+            "link": reverse("sap_integration:reconciliation", args=[fund.id]),
+        })
+    return result_warnings
+
+
+def _sap_obligo_warnings(reconciliations):
+    """Open staff Obligo not reflected in the planning, one entry per person."""
+    people = {}
+    for fund, result in reconciliations:
+        for check in result.checks:
+            if not check.obligo_issues or check.ignored:
+                continue
+            name = str(check.staff_member) if check.staff_member else check.position.person_name or check.position.title
+            entry = people.setdefault(name, {"staff_member": check.staff_member, "details": [], "links": [], "amount": Decimal("0.00")})
+            for issue in check.obligo_issues:
+                entry["details"].append(f"{fund.project.acronym} (SAP-Position {check.position.reference}): {issue['text']}")
+                entry["amount"] += abs(issue["amount"])
+            entry["links"].append({
+                "label": f"{fund.project.acronym} – SAP-Position {check.position.reference}",
+                "url": reverse("sap_integration:position_detail", args=[fund.id, check.position.id]),
+            })
+    return [
+        {
+            "severity": "warning",
+            "title": f"SAP-Obligo nicht in Planung: {name}",
+            "details": entry["details"],
+            "link": (
+                f"/staffing/details/{entry['staff_member'].id}/" if entry["staff_member"] else entry["links"][0]["url"]
+            ),
+            "correction_links": entry["links"],
+        }
+        for name, entry in sorted(people.items())
+    ]
 
 
 @login_required
@@ -866,7 +1023,43 @@ def statistics(request):
         ]
         overhead_overall_total = sum(overhead_totals_list, Decimal("0.00")).quantize(Decimal("0.01"))
 
+    # Funds (spread), planned expenses and SAP actuals per year side by side.
+    from sap_integration.crosscheck import sap_actuals_by_year
+
+    planned = planned_expenses_by_year(list(projects.prefetch_related("overheadbudgetitem_set")))
+    actuals = sap_actuals_by_year()
+    comparison_years = sorted(set(sorted_years) | set(planned) | set(actuals))
+    comparison_rows = []
+    empty = {"staff": Decimal("0.00"), "other": Decimal("0.00"), "overhead": Decimal("0.00")}
+    for year in comparison_years:
+        funds = yearly_totals.get(year, Decimal("0.00")).quantize(Decimal("0.01"))
+        parts = planned.get(year, empty)
+        planned_costs = parts["staff"] + parts["other"]
+        comparison_rows.append({
+            "year": year,
+            "funds": funds,
+            "overhead": parts["overhead"],
+            "planned": planned_costs,
+            "actual": actuals.get(year),
+            "difference": planned_costs + parts["overhead"] - funds,
+        })
+    overhead_total = sum((row["overhead"] for row in comparison_rows), Decimal("0.00"))
+    planned_total = sum((row["planned"] for row in comparison_rows), Decimal("0.00"))
+    funds_split = {
+        "overhead": overhead_total,
+        "planned": planned_total,
+        "actual": sum((row["actual"] or Decimal("0.00") for row in comparison_rows), Decimal("0.00")),
+        "unplanned": total_third_party_funds - overhead_total - planned_total,
+    }
+
     return render(request, "controlling/statistics.html", {
+        "comparison_rows": comparison_rows,
+        "comparison_years": comparison_years,
+        "comparison_funds": [float(row["funds"]) for row in comparison_rows],
+        "comparison_planned": [float(row["planned"]) for row in comparison_rows],
+        "comparison_overhead": [float(row["overhead"]) for row in comparison_rows],
+        "funds_split": funds_split,
+        "comparison_actual": [float(row["actual"] or 0) for row in comparison_rows],
         "statistics_years": sorted_years,
         "statistics_yearly_values": [float(value) for value in yearly_values],
         "statistics_cumulative_values": [float(value) for value in cumulative_values],
@@ -1013,10 +1206,11 @@ def main(request):
             'staff': staff_name,
             'staff_id': employment.staff_member.id,
             'percentage': employment.percentage,
-            'label': f"Vertrag {_decimal_2(employment.percentage)}%",
+            'label': f"{employment.get_status_display()} {Decimal(employment.percentage).normalize():f}%",
+            'status': employment.status,
             'tooltip_html': (
                 f"<strong>{staff_name}</strong><br>"
-                f"Vertrag: {employment.get_category()} "
+                f"{employment.get_status_display()}: {employment.get_category()} "
                 f"({_decimal_2(employment.percentage)}%)<br>"
                 f"{employment.start_date} - {employment.end_date}<br><br>"
                 f"<strong>Zuordnungen:</strong><br>{allocation_html}"
@@ -1042,8 +1236,11 @@ def main(request):
                 'title': milestone.title,
             })
 
+    projects, project_totals = project_budget_overview(projects)
+
     return render(request, "controlling/main.html", {
         "projects": projects,
+        "project_totals": project_totals,
         "staff_list": staff,
         "budgets_per_year": budgets_per_year,
         "landesstellen": landesstellen,

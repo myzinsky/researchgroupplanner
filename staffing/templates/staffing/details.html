@@ -1,28 +1,254 @@
 {% extends "controlling/base.html" %}
 
-{% load django_bootstrap5 %}
+{% load django_bootstrap5 static %}
 
 {% block title %}{{ staff_member }}{% endblock %}
 {% block heading %}{{ staff_member }}{% endblock %}
 
 {% block content %}
-  <h2>Anstellungen & Gehälter</h2>
+  <h2>Finanzierung im Zeitverlauf</h2>
+
+  {{ allocation_timeline|json_script:"allocation-timeline-data" }}
+  <link rel="stylesheet" href="{% static 'vendor/vis-timeline/vis-timeline-graph2d.min.css' %}">
+  <script src="{% static 'vendor/vis-timeline/vis-timeline-graph2d.min.js' %}"></script>
+  <style>
+      .timeline-scroll {
+          border: 1px solid #d6d6d6;
+          border-radius: 8px;
+          background: #fff;
+          margin-bottom: 1.5rem;
+      }
+
+      #allocation_timeline .vis-timeline {
+          border: 0;
+      }
+
+      #allocation_timeline .vis-item {
+          background-color: #004990;
+          border-color: #003a73;
+          border-radius: 5px;
+          font-size: 0.85rem;
+      }
+
+      #allocation_timeline .vis-item.has-link {
+          cursor: pointer;
+      }
+
+      #allocation_timeline .vis-item .vis-item-content {
+          color: #ffffff;
+      }
+
+      #allocation_timeline .vis-label {
+          font-size: 0.85rem;
+          font-weight: 600;
+      }
+
+      #allocation_timeline .vis-label a {
+          color: inherit;
+          text-decoration: none;
+      }
+
+      #allocation_timeline .vis-label a:hover {
+          text-decoration: underline;
+      }
+
+      #allocation_timeline .vis-time-axis .vis-text {
+          font-size: 0.75rem;
+      }
+  </style>
+  <script>
+      document.addEventListener('DOMContentLoaded', function () {
+          var container = document.getElementById('allocation_timeline');
+          var entries = JSON.parse(document.getElementById('allocation-timeline-data').textContent);
+          if (!entries.length) {
+              container.innerHTML = '<p class="m-3 text-muted">Keine Finanzierungszuordnungen hinterlegt.</p>';
+              return;
+          }
+          if (!window.vis || !vis.Timeline) {
+              container.innerHTML = '<p class="m-3 text-danger">Timeline-Library konnte nicht geladen werden.</p>';
+              return;
+          }
+
+          function parseDate(value) {
+              var parts = value.split('-');
+              return new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+          }
+
+          function escapeHtml(value) {
+              var node = document.createElement('div');
+              node.textContent = value;
+              return node.innerHTML;
+          }
+
+          var groups = [];
+          var seenGroups = {};
+          var links = {};
+          var items = entries.map(function (entry) {
+              if (!seenGroups[entry.group]) {
+                  seenGroups[entry.group] = true;
+                  var label = escapeHtml(entry.label);
+                  groups.push({
+                      id: entry.group,
+                      content: entry.link ? '<a href="' + entry.link + '">' + label + '</a>' : label,
+                  });
+              }
+              var start = parseDate(entry.start);
+              var end = parseDate(entry.end);
+              end.setDate(end.getDate() + 1);
+              var itemId = 'allocation_' + entry.id;
+              if (entry.link) {
+                  links[itemId] = entry.link;
+              }
+              return {
+                  id: itemId,
+                  group: entry.group,
+                  content: entry.content ? escapeHtml(entry.content) : entry.percentage + '\u00a0%' + (entry.status !== 'contract' ? ' (' + entry.status_label + ')' : ''),
+                  title: escapeHtml(entry.title),
+                  start: start,
+                  end: end,
+                  className: (entry.link ? 'has-link ' : '') + 'status-' + entry.status
+                      + (entry.rebooking === 'in' ? ' allocation-rebook' : '') + (entry.rebooking === 'out' ? ' allocation-rebook-out' : '')
+                      + (entry.sap_contract ? ' sap-contract' : ''),
+              };
+          });
+
+          var min = items.reduce(function (acc, item) { return item.start < acc ? item.start : acc; }, items[0].start);
+          var max = items.reduce(function (acc, item) { return item.end > acc ? item.end : acc; }, items[0].end);
+          var paddedMin = new Date(min.getFullYear(), min.getMonth() - 2, 1);
+          var paddedMax = new Date(max.getFullYear(), max.getMonth() + 3, 0);
+
+          if (vis.moment && !window.__gpSingleLetterMonthsConfigured) {
+              vis.moment.updateLocale('de', {
+                  monthsShort: ['J', 'F', 'M', 'A', 'M', 'J', 'J', 'A', 'S', 'O', 'N', 'D'],
+              });
+              window.__gpSingleLetterMonthsConfigured = true;
+          }
+
+          var timeline = new vis.Timeline(container, items, groups, {
+              // Stack overlapping bars of a row, e.g. the parts of an allocation that are rebooked.
+              stack: true,
+              min: paddedMin,
+              max: paddedMax,
+              start: paddedMin,
+              end: paddedMax,
+              zoomable: true,
+              moveable: true,
+              horizontalScroll: true,
+              verticalScroll: false,
+              showCurrentTime: true,
+              zoomKey: 'ctrlKey',
+              margin: { item: { horizontal: 4, vertical: 6 }, axis: 6 },
+              orientation: { axis: 'bottom' },
+              locale: 'de',
+              timeAxis: { scale: 'month', step: 1 },
+              format: {
+                  minorLabels: { month: 'MMM' },
+                  majorLabels: { month: 'YYYY' },
+              },
+              tooltip: { followMouse: false, overflowMethod: 'flip' },
+          });
+
+          timeline.on('select', function (properties) {
+              if (!properties.items || !properties.items.length) {
+                  return;
+              }
+              var target = links[properties.items[0]];
+              if (target) {
+                  window.location.href = target;
+              }
+          });
+      });
+  </script>
+  {% include "controlling/_employment_status_styles.html" %}
+  <div class="timeline-scroll mb-1">
+      <div id="allocation_timeline"></div>
+  </div>
+  {% include "controlling/_employment_status_legend.html" with show_sap_contracts=reservations %}
+
+  {% if reservations %}
+    <h2>SAP-Mittelreservierungen</h2>
+    <table class="table table-bordered table-sm align-middle">
+      <thead>
+        <tr>
+          <th>Projekt / SAP-Referenz</th>
+          <th>Vertragszeitraum laut SAP</th>
+          <th>Umfang</th>
+          <th class="text-end">Ist bisher</th>
+          <th class="text-end">Offenes Obligo</th>
+          <th>Hinweise</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for reservation in reservations %}
+          <tr{% if reservation.issues and not reservation.ignored %} class="table-warning"{% endif %}>
+            <td>
+              <a href="{% url 'projects:details' reservation.project.acronym %}">{{ reservation.project.acronym }}</a>
+              · <a href="{{ reservation.url }}" title="SAP-Position im Abgleich öffnen">{{ reservation.position.reference }}</a>
+              {% if reservation.position.contract_type %}<span class="text-muted small">({{ reservation.position.contract_type }})</span>{% endif %}
+            </td>
+            <td class="text-nowrap">
+              {% for start, end in reservation.periods %}<div>{{ start|date:"d.m.Y" }} – {{ end|date:"d.m.Y" }}</div>{% empty %}<span class="text-muted">–</span>{% endfor %}
+            </td>
+            <td class="text-nowrap">
+              {% if reservation.position.percentage %}{{ reservation.position.percentage|floatformat:"-2" }} %{% endif %}
+              {% if reservation.position.weekly_hours %}{{ reservation.position.weekly_hours|floatformat:"-2" }} h/Woche{% endif %}
+            </td>
+            <td class="text-end text-nowrap">€&nbsp;{{ reservation.position.actual }}</td>
+            <td class="text-end text-nowrap">€&nbsp;{{ reservation.position.commitment }}</td>
+            <td class="small">
+              {% if not reservation.linked %}
+                <div class="mb-1">
+                  <span class="badge text-bg-info">über Namen zugeordnet</span>
+                  {% if reservation.link_candidates %}
+                    <form method="post" action="{% url 'staffing:link_reservation' staff_member.id reservation.position.id %}" class="d-inline ms-1">
+                      {% csrf_token %}
+                      <button type="submit" class="btn btn-sm btn-outline-primary py-0" title="SAP-Referenz bei {{ reservation.link_candidates|length }} passenden Zuordnung(en) eintragen">Verknüpfen</button>
+                    </form>
+                  {% else %}
+                    <span class="text-muted">keine passende Zuordnung – über den <a href="{{ reservation.url }}">SAP-Abgleich</a> übernehmen</span>
+                  {% endif %}
+                </div>
+              {% endif %}
+              {% for issue in reservation.issues %}<div>{{ issue }}</div>{% endfor %}
+              {% if reservation.ignored %}<div class="text-muted">Im SAP-Abgleich ignoriert.</div>{% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+
+  <div class="d-flex justify-content-between align-items-center">
+    <h2>Anstellungen & Gehälter</h2>
+    <a class="btn btn-sm btn-outline-primary" href="{% url 'staffing:plan_employment' %}?staff={{ staff_member.id }}">Anstellung planen</a>
+  </div>
 
     {% for employment in employments %}
-      <h3>{{ employment.get_category }} ({{ employment.start_date }} - {{ employment.end_date }}, {{ employment.percentage }}%)</h3>
-
-      <table class="table table-bordered">
-        <tr>
-            <td>Monat</td>
-            <td>Gehalt</td>
-        </tr>
-            {% for month, salary in employment.salaries_by_month.items %}
-            <tr>
-                <td>{{ month }}</td>
-                <td>€&nbsp;{{ salary }}</td>
-            </tr>
-            {% endfor %}
-      </table>
+      {% if employment.merge_hint %}
+        <div class="alert {% if employment.merge_hint.ok %}alert-info{% else %}alert-light border{% endif %} d-flex justify-content-between align-items-center gap-3">
+          <span>
+            Schließt direkt an die vorherige Anstellung an ({{ employment.merge_hint.previous.start_date|date:"d.m.Y" }} – {{ employment.merge_hint.previous.end_date|date:"d.m.Y" }}).
+            {% if not employment.merge_hint.ok %}<br><span class="text-muted">Nicht zusammenführbar: {{ employment.merge_hint.reason }}</span>{% endif %}
+          </span>
+          {% if employment.merge_hint.ok %}
+            <form method="post" action="{% url 'staffing:merge_employments' employment.merge_hint.previous.id employment.id %}"
+                  onsubmit="return confirm('Anstellungen zusammenführen? Zuordnungen und Gehälter bleiben erhalten und werden der früheren Anstellung zugeordnet.');">
+              {% csrf_token %}
+              <button type="submit" class="btn btn-sm btn-primary text-nowrap">Zusammenführen</button>
+            </form>
+          {% endif %}
+        </div>
+      {% endif %}
+      <h3>{{ employment.get_category }}{% if employment.salary_category %}, {{ employment.salary_category }}{% endif %} ({{ employment.start_date }} - {{ employment.end_date }}, {{ employment.percentage }}%)
+        {% if employment.status != "contract" %}<span class="badge text-bg-info align-middle fs-6">{{ employment.get_status_display }}</span>{% endif %}
+        {% if not employment.statutory_health_insurance %}<span class="badge text-bg-light border align-middle fs-6" title="Ohne Arbeitgeberanteile zur Kranken- und Pflegeversicherung">privat versichert</span>{% endif %}
+      </h3>
+      {% if employment.level_steps %}
+        <p class="text-muted">
+          Stufenbeginn (fiktiv) {{ employment.level_start_date|date:"d.m.Y" }} in Stufe {{ employment.start_level }} ·
+          {% for level, since in employment.level_steps %}Stufe {{ level }} ab {{ since|date:"d.m.Y" }}{% if not forloop.last %}, {% endif %}{% endfor %}
+        </p>
+      {% endif %}
 
       <h4>Finanzierungszuordnungen</h4>
       {% if employment.allocations %}
@@ -32,6 +258,7 @@
               <th>Quelle</th>
               <th>Prozent</th>
               <th>Zeitraum</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
@@ -47,16 +274,143 @@
                   {% else %}
                     Landesstelle {{ allocation.landesstelle.title }}
                   {% endif %}
+                  {% if allocation.is_rebooking %}<span class="badge text-bg-secondary ms-1" title="Durch eine abgeschlossene Umbuchung entstanden">umgebucht</span>{% endif %}
                 </td>
                 <td>{{ allocation.percentage }}%</td>
                 <td>{{ allocation.start_date }} - {{ allocation.end_date|default:employment.end_date }}</td>
+                <td class="text-nowrap">
+                  <a class="btn btn-sm btn-outline-secondary" href="{% url 'staffing:edit_allocation' allocation.id %}">Bearbeiten</a>
+                  <a class="btn btn-sm btn-outline-primary" href="{% url 'staffing:rebook_allocation' allocation.id %}">Umbuchen</a>
+
+                </td>
               </tr>
+              {% for rebooking in allocation.open_rebookings %}
+                <tr class="table-warning">
+                  <td class="ps-4">
+                    ⇄ Umbuchung nach Projekt {{ rebooking.budget_item.project.acronym }} - {{ rebooking.budget_item.title }}
+                    {% if rebooking.source_psp or rebooking.target_psp %}<span class="small text-muted">(PSP {{ rebooking.source_psp|default:"–" }} → {{ rebooking.target_psp|default:"–" }})</span>{% endif %}
+                    <span class="badge text-bg-warning ms-1">offen</span>
+                  </td>
+                  <td>{{ rebooking.percentage }}%</td>
+                  <td>{{ rebooking.start_date }} - {{ rebooking.end }}</td>
+                  <td class="text-nowrap">{% include "staffing/_rebooking_actions.html" %}</td>
+                </tr>
+              {% endfor %}
             {% endfor %}
           </tbody>
         </table>
+        <div class="print-page-break"></div>
       {% else %}
         <p class="text-muted">Keine Finanzierungszuordnungen hinterlegt.</p>
       {% endif %}
+
+      <div class="d-flex justify-content-between align-items-center">
+        <h4>Gehälter</h4>
+        {% if employment.can_estimate %}
+          <form method="post" action="{% url 'staffing:estimate_salaries' employment.id %}" class="d-flex gap-2 align-items-center"
+                onsubmit="return confirm('Gehälter ab dem gewählten Monat aus den Entgelttabellen schätzen? Bestehende Werte ab diesem Monat werden ersetzt.');">
+            {% csrf_token %}
+<div class="form-check form-check-inline small mb-0">
+              <input type="hidden" name="insurance_field" value="1">
+              <input class="form-check-input" type="checkbox" name="statutory_health_insurance" id="estimate-insurance-{{ employment.id }}-quick"{% if employment.statutory_health_insurance %} checked{% endif %}>
+              <label class="form-check-label text-nowrap" for="estimate-insurance-{{ employment.id }}-quick">gesetzlich KV</label>
+            </div>
+            <label class="small text-muted text-nowrap" for="estimate-from-{{ employment.id }}">ab</label>
+            <input type="month" id="estimate-from-{{ employment.id }}" name="from_month" value="{{ employment.estimate_from }}" class="form-control form-control-sm" style="width: 10rem;">
+            <button type="submit" class="btn btn-sm btn-outline-primary text-nowrap">Gehälter schätzen</button>
+          </form>
+        {% else %}
+          <button type="button" class="btn btn-sm btn-outline-primary text-nowrap" data-bs-toggle="collapse"
+                  data-bs-target="#estimate-form-{{ employment.id }}">Gehälter schätzen</button>
+        {% endif %}
+      </div>
+      {% if not employment.can_estimate %}
+        <form method="post" action="{% url 'staffing:estimate_salaries' employment.id %}" id="estimate-form-{{ employment.id }}"
+              class="collapse border rounded p-3 mb-3"
+              onsubmit="return confirm('Entgeltgruppe und Stufe speichern und Gehälter ab dem gewählten Monat aus den Entgelttabellen schätzen? Bestehende Werte ab diesem Monat werden ersetzt.');">
+          {% csrf_token %}
+          <p class="small text-muted mb-2">Für die Schätzung fehlen Entgeltgruppe und Stufe; sie werden bei der Anstellung gespeichert.</p>
+          <div class="row g-2 align-items-end">
+            <div class="col-sm-3">
+              <label class="form-label small" for="estimate-category-{{ employment.id }}">Entgeltgruppe</label>
+              <select name="salary_category" id="estimate-category-{{ employment.id }}" class="form-select form-select-sm" required>
+                <option value="">–</option>
+                {% for category in salary_categories %}
+                  <option value="{{ category.id }}"{% if category.id == employment.estimate_defaults.salary_category %} selected{% endif %}>{{ category }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-sm-2">
+              <label class="form-label small" for="estimate-level-{{ employment.id }}">Stufe bei Beginn</label>
+              <select name="start_level" id="estimate-level-{{ employment.id }}" class="form-select form-select-sm">
+                {% for level in levels %}
+                  <option value="{{ level }}"{% if level == employment.estimate_defaults.start_level %} selected{% endif %}>Stufe {{ level }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-sm-3">
+              <label class="form-label small" for="estimate-level-start-{{ employment.id }}">Stufenbeginn (fiktiv)</label>
+              <input type="date" name="level_start_date" id="estimate-level-start-{{ employment.id }}" class="form-control form-control-sm"
+                     value="{{ employment.estimate_defaults.level_start_date }}">
+            </div>
+            <div class="col-sm-2">
+              <label class="form-label small" for="estimate-month-{{ employment.id }}">ab</label>
+              <input type="month" name="from_month" id="estimate-month-{{ employment.id }}" class="form-control form-control-sm" value="{{ employment.estimate_from }}">
+            </div>
+            <div class="col-sm-12">
+              <div class="form-check form-check-inline small mb-0">
+              <input type="hidden" name="insurance_field" value="1">
+              <input class="form-check-input" type="checkbox" name="statutory_health_insurance" id="estimate-insurance-{{ employment.id }}-full"{% if employment.statutory_health_insurance %} checked{% endif %}>
+              <label class="form-check-label text-nowrap" for="estimate-insurance-{{ employment.id }}-full">gesetzlich krankenversichert (Arbeitgeberanteile Kranken-/Pflegeversicherung)</label>
+            </div>
+            </div>
+            <div class="col-sm-2">
+              <button type="submit" class="btn btn-sm btn-primary w-100">Schätzen</button>
+            </div>
+          </div>
+        </form>
+      {% endif %}
+      {% if employment.sap_mismatches %}
+        <div class="alert alert-warning">
+          In {{ employment.sap_mismatches|length }} Monat(en) weicht das geplante Gehalt vom SAP-Ist ab:
+          {% for mismatch in employment.sap_mismatches %}{{ mismatch.month }}{% if not forloop.last %}, {% endif %}{% endfor %}.
+          Die Werte lassen sich im SAP-Abgleich über „Gehälter übernehmen“ aktualisieren:
+          <ul class="mb-0 mt-1">
+            {% for link in employment.sap_correction_links %}
+              <li><a href="{{ link.url }}">{{ link.label }}</a></li>
+            {% endfor %}
+          </ul>
+        </div>
+      {% endif %}
+      <table class="table table-bordered">
+        <tr>
+            <td>Monat</td>
+            <td>Gehalt</td>
+            {% if employment.has_sap_actuals %}<td>Ist (SAP)</td>{% endif %}
+        </tr>
+            {% for month, salary, actuals, mismatch in employment.salary_rows %}
+            <tr{% if mismatch %} class="table-warning"{% endif %}>
+                <td>{{ month }}</td>
+                <td>
+                    €&nbsp;{{ salary }}
+                    {% if mismatch %}<span class="badge text-bg-warning ms-1" title="Geplantes Gehalt weicht vom SAP-Ist ab">Abweichung</span>{% elif actuals %}<span class="badge text-bg-success ms-1" title="Monat ist in SAP als Ist gebucht">SAP-Ist</span>{% endif %}
+                </td>
+                {% if employment.has_sap_actuals %}
+                <td>
+                    {% for actual in actuals %}
+                        <div>
+                            €&nbsp;{{ actual.amount }}
+                            ({% if actual.project %}<a href="{% url 'projects:details' actual.project.acronym %}">{{ actual.label }}</a>{% else %}{{ actual.label }}{% endif %})
+                        </div>
+                    {% empty %}
+                        <span class="text-muted">–</span>
+                    {% endfor %}
+                </td>
+                {% endif %}
+            </tr>
+            {% endfor %}
+      </table>
+      {% if not forloop.last %}<div class="print-page-break"></div>{% endif %}
     {% endfor %}
   </ul>
 {% endblock %}

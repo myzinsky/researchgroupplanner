@@ -8,55 +8,32 @@
 
 <h2 class="mt-2">Laufende und geplante Projekte</h2>
 
-<table class="table">
+<table class="table table-sm align-middle">
     <thead>
         <tr>
-            <th scope="col"></th>
-            <th scope="col">Laufzeit</th>
-            <th scope="col">Budget</th>
-            <th scope="col">Personalbudgets</th>
-            <th scope="col">Andere Budgets</th>
-            <th scope="col">Overhead</th>
+            <th scope="col">Projekt</th>
+            <th scope="col">Ende</th>
+            <th scope="col">Budget (ohne Overhead)</th>
         </tr>
     </thead>
     <tbody>
         {% for project in projects %}
             <tr>
                 <th scope="row"><a href="{% url 'projects:details' project.acronym %}">{{ project.acronym }}</a></th>
-                <td>
-                    {{ project.start_date }} - {{ project.end_date }}
-                    {% if project.extension_planning_date and project.extension_planning_date > project.end_date %}
-                        <br><span class="text-muted">kostenneutrale Verlängerung bis {{ project.extension_planning_date }}</span>
-                    {% endif %}
-                </td>
-                <td>€&nbsp;{{ project.budget_total }}</td>
-                <td>
-                    {% for budget in project.staffbudgetitem_set.all %}
-                        <div>{{ budget.short_title }}: €&nbsp;{{ budget.amount }}</div>
-                    {% endfor %}
-                </td>
-                <td>
-                    {% for budget in project.otherbudgetitem_set.all %}
-                        <div>{{ budget.short_title }}: €&nbsp;{{ budget.amount }}</div>
-                    {% endfor %}
-                </td>
-                <td>
-                    {% for budget in project.overheadbudgetitem_set.all %}
-                        <div>
-                            Gesamt: €&nbsp;{{ budget.amount }}<br>
-                            {% if OVERHEAD_SPLIT_ENABLED %}
-                                {% for share in budget.overheadbudgetitemshare_set.all %}
-                                    {{ share.institute }}: {{ share.percentage }}%{% if share.institute.is_own_chair %} ✓{% endif %}<br>
-                                {% endfor %}
-                                Verfügbar (Lehrstuhl): €&nbsp;{{ budget.available_amount }}
-                            {% endif %}
-                        </div>
-                    {% endfor %}
-                </td>
+                <td class="text-nowrap">{{ project.get_effective_end_date|date:"m/Y" }}</td>
+                <td>{% include "controlling/_budget_usage.html" with used=project.used_budget budget=project.usage_budget percent=project.usage_percent rebooked=project.rebooked_used rebooked_percent=project.rebooked_percent %}</td>
             </tr>
         {% endfor %}
     </tbody>
+    <tfoot>
+        <tr class="fw-bold">
+            <th scope="row">Summe</th>
+            <td></td>
+            <td>{% include "controlling/_budget_usage.html" with used=project_totals.used budget=project_totals.budget percent=project_totals.usage_percent rebooked=project_totals.rebooked_used rebooked_percent=project_totals.rebooked_percent %}</td>
+        </tr>
+    </tfoot>
 </table>
+<p class="small"><a href="{% url 'projects:index' %}">Alle Budgets je Kostenart auf der Projektseite →</a></p>
 
 <link rel="stylesheet" href="{% static 'vendor/vis-timeline/vis-timeline-graph2d.min.css' %}">
 <script src="{% static 'vendor/vis-timeline/vis-timeline-graph2d.min.js' %}"></script>
@@ -99,6 +76,21 @@
 
     .vis-item .vis-item-content {
         color: #ffffff !important;
+    }
+
+    #timeline_projects .vis-item,
+    #timeline_employees .vis-item,
+    #timeline_hiwis .vis-item {
+        cursor: pointer;
+    }
+
+    .vis-labelset .vis-label a {
+        color: inherit;
+        text-decoration: none;
+    }
+
+    .vis-labelset .vis-label a:hover {
+        text-decoration: underline;
     }
 
     .vis-labelset {
@@ -270,9 +262,12 @@
         }
         var groups = [];
         var items = [];
+        var links = {};
 
 {% for project in projects %}
-        groups.push({ id: 'p{{ project.id }}', content: '{{ project.acronym|escapejs }}' });
+        var projectLink = '{% url "projects:details" project.acronym %}';
+        links['p{{ project.id }}'] = projectLink;
+        groups.push({ id: 'p{{ project.id }}', content: '<a href="' + projectLink + '">{{ project.acronym|escapejs }}</a>' });
 
         var regularStart = gpBuildDate({{ project.start_date|date:"Y" }}, {{ project.start_date|date:"n" }}, {{ project.start_date|date:"j" }});
         var regularEnd = gpBuildDate({{ project.end_date|date:"Y" }}, {{ project.end_date|date:"n" }}, {{ project.end_date|date:"j" }});
@@ -332,7 +327,7 @@
         container.style.minWidth = '100%';
         container.style.height = 'auto';
 
-        new vis.Timeline(container, items, groups, {
+        var timeline = new vis.Timeline(container, items, groups, {
             stack: false,
             min: windowRange.min,
             max: windowRange.max,
@@ -362,6 +357,17 @@
             },
             tooltip: { followMouse: false, overflowMethod: 'flip' },
         });
+
+        timeline.on('select', function (properties) {
+            if (!properties.items || !properties.items.length) {
+                return;
+            }
+            var item = timeline.itemsData.get(properties.items[0]);
+            var target = item && links[item.group];
+            if (target) {
+                window.location.href = target;
+            }
+        });
     }
 </script>
 <div id="timeline_projects_scroll" class="timeline-scroll">
@@ -386,7 +392,7 @@
 {% for row in staff_timeline_entries_employees %}
         var groupId = 's{{ row.staff_id }}';
         if (!existingGroups[groupId]) {
-            groups.push({ id: groupId, content: '{{ row.staff|escapejs }}' });
+            groups.push({ id: groupId, content: '<a href="{% url "staffing:details" row.staff_id %}">{{ row.staff|escapejs }}</a>' });
             existingGroups[groupId] = true;
         }
 
@@ -407,7 +413,8 @@
         items.push({
             id: itemId,
             group: groupId,
-            content: 'Vertrag ' + percentage + '%',
+            content: '{{ row.label|escapejs }}',
+            className: 'status-{{ row.status }}',
             start: startDate,
             end: endDate,
             style: 'background-color: ' + gpPercentageColor(percentage) + '; border-color: #4e78b4; color: #ffffff;'
@@ -506,7 +513,7 @@
 {% for row in staff_timeline_entries_hiwis %}
         var groupId = 's{{ row.staff_id }}';
         if (!existingGroups[groupId]) {
-            groups.push({ id: groupId, content: '{{ row.staff|escapejs }}' });
+            groups.push({ id: groupId, content: '<a href="{% url "staffing:details" row.staff_id %}">{{ row.staff|escapejs }}</a>' });
             existingGroups[groupId] = true;
         }
 
@@ -527,7 +534,8 @@
         items.push({
             id: itemId,
             group: groupId,
-            content: 'Vertrag ' + percentage + '%',
+            content: '{{ row.label|escapejs }}',
+            className: 'status-{{ row.status }}',
             start: startDate,
             end: endDate,
             style: 'background-color: ' + gpPercentageColor(percentage) + '; border-color: #4e78b4; color: #ffffff;'
@@ -624,6 +632,7 @@
     });
 </script>
 
+{% include "controlling/_employment_status_styles.html" %}
 <div id="timeline_employees_scroll" class="timeline-scroll">
     <div id="timeline_employees" class="timeline-shell timeline-shell--staff"></div>
 </div>
@@ -633,6 +642,7 @@
 <div id="timeline_hiwis_scroll" class="timeline-scroll">
     <div id="timeline_hiwis" class="timeline-shell timeline-shell--staff"></div>
 </div>
+{% include "controlling/_employment_status_legend.html" %}
 
 <h2 class="mt-2">Jahresscheiben</h2>
 

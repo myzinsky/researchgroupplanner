@@ -42,6 +42,28 @@ def calculate_salary_for_allocation(allocation: StaffFundingAllocation):
 
     return SalaryAllocation(allocation, total_salary, months)
 
+def get_allocation_person_months(allocation: StaffFundingAllocation) -> dict[str, Decimal]:
+    """Person months (PM) per year: share of each month covered × allocation percentage / 100.
+
+    A full month at 100 % is 1 PM; the allocation is limited to its employment.
+    """
+    from calendar import monthrange
+
+    employment = allocation.employment
+    start = max(allocation.start_date, employment.start_date)
+    end = min(allocation.end_date or employment.end_date, employment.end_date)
+    factor = Decimal(allocation.percentage) / Decimal("100")
+    years = {}
+    current = start.replace(day=1)
+    while current <= end:
+        days = monthrange(current.year, current.month)[1]
+        covered = (min(end, current.replace(day=days)) - max(start, current)).days + 1
+        year = str(current.year)
+        years[year] = years.get(year, Decimal("0")) + Decimal(covered) / Decimal(days) * factor
+        current += relativedelta(months=1)
+    return years
+
+
 def get_allocations_salary_sum_of_year(year: int, allocation: SalaryAllocation) -> Decimal:
     return Decimal(sum(allocation.months.get(f"{year}-{month:02d}", 0) for month in range(1, 13))).quantize(Decimal('0.01'))
 
@@ -69,7 +91,191 @@ def get_timeline_allocations(project: Project) -> list[dict]:
         allocations.append({
             "employee": allocation.employment.staff_member,
             "category": allocation.employment.get_category(),
+            "status": allocation.employment.status,
+            "status_label": allocation.employment.get_status_display(),
+            "rebooking": None,
             "start": allocation.start_date,
             "end": allocation.end_date or allocation.employment.end_date
         })
+    # Open Umbuchungen onto ("in") and away from ("out") this project are shown as extra bars.
+    from django.db.models import Q
+
+    from staffing.models import Rebooking
+    for rebooking in Rebooking.objects.filter(
+        Q(budget_item__project=project) | Q(allocation__budget_item__project=project)
+    ).select_related("allocation__employment__staff_member", "allocation__budget_item__project", "budget_item__project"):
+        employment = rebooking.allocation.employment
+        source = rebooking.allocation.budget_item
+        source_label = source.project.acronym if source else "Umbuchung"
+        incoming = rebooking.budget_item.project_id == project.id
+        percentage = f"{rebooking.percentage.normalize():f}\u00a0%"
+        allocations.append({
+            "employee": employment.staff_member,
+            "category": employment.get_category(),
+            "status": employment.status,
+            "status_label": employment.get_status_display(),
+            "rebooking": "in" if incoming else "out",
+            "rebooking_label": (
+                f"← {source_label} · {percentage}" if incoming else f"→ {rebooking.budget_item.project.acronym} · {percentage}"
+            ),
+            "rebooking_title": (
+                f"Umbuchung (offen): {source_label} → {rebooking.budget_item.project.acronym}, {percentage}"
+            ),
+            "start": rebooking.start_date,
+            "end": rebooking.end,
+        })
     return allocations
+
+
+def get_staff_budget_item_used(budget_item: StaffBudgetItem) -> Decimal:
+    """Planned salary costs of all allocations on a staff budget item."""
+    return sum(
+        (
+            calculate_salary_for_allocation(allocation).salary_sum
+            for allocation in StaffFundingAllocation.objects.filter(budget_item=budget_item)
+        ),
+        Decimal("0.00"),
+    )
+
+
+def get_other_budget_item_used(budget_item) -> Decimal:
+    """Planned transactions of an other budget item within the project years."""
+    years = [int(year) for year in budget_item.project.get_years()]
+    return sum(
+        (transaction.amount for transaction in budget_item.get_transactions() if transaction.date.year in years),
+        Decimal("0.00"),
+    )
+
+
+def budget_usage_percent(used: Decimal, budget: Decimal | None) -> Decimal | None:
+    if not budget:
+        return None
+    return (used * 100 / budget).quantize(Decimal("0.1"))
+
+
+def amount_in_period(months: dict, start, end) -> Decimal:
+    """Share of monthly amounts ({"YYYY-MM": amount}) within a period, prorated by days for partial months."""
+    from calendar import monthrange
+    from datetime import date
+
+    total = Decimal("0")
+    for key, amount in months.items():
+        month_start = date.fromisoformat(f"{key}-01")
+        days = monthrange(month_start.year, month_start.month)[1]
+        overlap = (min(end, month_start.replace(day=days)) - max(start, month_start)).days + 1
+        if overlap > 0:
+            total += Decimal(amount) * Decimal(overlap) / Decimal(days)
+    return total.quantize(Decimal("0.01"))
+
+
+def person_months_in_period(allocation: StaffFundingAllocation, start, end) -> Decimal:
+    """Person months of an allocation within a period."""
+    allocation_end = allocation.end_date or allocation.employment.end_date
+    clipped = StaffFundingAllocation(
+        employment=allocation.employment, percentage=allocation.percentage,
+        start_date=max(allocation.start_date, start), end_date=min(allocation_end, end),
+    )
+    if clipped.start_date > clipped.end_date:
+        return Decimal("0")
+    return sum(get_allocation_person_months(clipped).values(), Decimal("0"))
+
+
+def project_budget_overview(projects):
+    """Budget usage per project and cost category (without overhead) plus totals.
+
+    Returns (projects, totals); projects get used/usage attributes, also on
+    their staff and other budget items, including the effect of open Umbuchungen.
+    """
+    from staffing.utils import rebooking_cost_deltas
+
+    project_totals = {key: Decimal("0.00") for key in (
+        "budget", "used", "staff", "staff_used", "other", "other_used", "overhead", "overhead_available",
+    )}
+    projects = list(projects.prefetch_related("staffbudgetitem_set", "otherbudgetitem_set", "overheadbudgetitem_set"))
+    rebooking_deltas = rebooking_cost_deltas()
+    project_totals["rebooking_delta"] = Decimal("0.00")
+    for project in projects:
+        # Budget usage excludes overhead on both sides.
+        overhead = sum((item.amount for item in project.overheadbudgetitem_set.all()), Decimal("0.00"))
+        project.usage_budget = project.budget_total - overhead if project.budget_total is not None else None
+        project.rebooking_delta = Decimal("0.00")
+        for budget in project.staffbudgetitem_set.all():
+            budget.used = get_staff_budget_item_used(budget)
+            budget.usage_percent = budget_usage_percent(budget.used, budget.amount)
+            delta = rebooking_deltas.get(budget.id)
+            if delta:
+                budget.rebooked_used = budget.used + delta
+                budget.rebooked_percent = budget_usage_percent(budget.rebooked_used, budget.amount)
+                project.rebooking_delta += delta
+            project_totals["staff"] += budget.amount
+            project_totals["staff_used"] += budget.used
+        for budget in project.otherbudgetitem_set.all():
+            budget.used = get_other_budget_item_used(budget)
+            budget.usage_percent = budget_usage_percent(budget.used, budget.amount)
+            project_totals["other"] += budget.amount
+            project_totals["other_used"] += budget.used
+        project.used_budget = sum(
+            (b.used for b in [*project.staffbudgetitem_set.all(), *project.otherbudgetitem_set.all()]),
+            Decimal("0.00"),
+        )
+        project.usage_percent = budget_usage_percent(project.used_budget, project.usage_budget)
+        if project.rebooking_delta:
+            project.rebooked_used = project.used_budget + project.rebooking_delta
+            project.rebooked_percent = budget_usage_percent(project.rebooked_used, project.usage_budget)
+            project_totals["rebooking_delta"] += project.rebooking_delta
+        project_totals["budget"] += project.usage_budget or Decimal("0.00")
+        project_totals["used"] += project.used_budget
+        for budget in project.overheadbudgetitem_set.all():
+            project_totals["overhead"] += budget.amount
+            project_totals["overhead_available"] += budget.available_amount()
+
+    project_totals["usage_percent"] = budget_usage_percent(project_totals["used"], project_totals["budget"])
+    project_totals["staff_percent"] = budget_usage_percent(project_totals["staff_used"], project_totals["staff"])
+    # Shown whenever a listed budget is affected, even if the moves cancel out in the total.
+    if any(getattr(project, "rebooked_used", None) is not None for project in projects):
+        delta = project_totals["rebooking_delta"]
+        project_totals["rebooked_used"] = project_totals["used"] + delta
+        project_totals["rebooked_percent"] = budget_usage_percent(project_totals["rebooked_used"], project_totals["budget"])
+        project_totals["staff_rebooked_used"] = project_totals["staff_used"] + delta
+        project_totals["staff_rebooked_percent"] = budget_usage_percent(
+            project_totals["staff_rebooked_used"], project_totals["staff"],
+        )
+    project_totals["other_percent"] = budget_usage_percent(project_totals["other_used"], project_totals["other"])
+    return projects, project_totals
+
+
+def planned_expenses_by_year(projects) -> dict[str, dict[str, Decimal]]:
+    """Planned costs per calendar year, split into "staff", "other" and "overhead".
+
+    Staff from the allocations, other costs by transaction date. Overhead has
+    no dates of its own and is spread evenly over the project duration (incl.
+    extension), like the funds.
+    """
+    from .models import OtherBudgetItemTransaction
+
+    totals = {}
+
+    def add(year, amount, part):
+        parts = totals.setdefault(year, {"staff": Decimal("0.00"), "other": Decimal("0.00"), "overhead": Decimal("0.00")})
+        parts[part] += Decimal(amount)
+
+    project_ids = [project.id for project in projects]
+    for allocation in StaffFundingAllocation.objects.filter(budget_item__project_id__in=project_ids).select_related("employment"):
+        for month, amount in calculate_salary_for_allocation(allocation).months.items():
+            add(month[:4], amount, "staff")
+    for transaction in OtherBudgetItemTransaction.objects.filter(budget_item__project_id__in=project_ids):
+        add(str(transaction.date.year), transaction.amount, "other")
+    for project in projects:
+        overhead = sum((item.amount for item in project.overheadbudgetitem_set.all()), Decimal("0.00"))
+        end = project.get_effective_end_date()
+        months = (end.year - project.start_date.year) * 12 + (end.month - project.start_date.month) + 1
+        if not overhead or months <= 0:
+            continue
+        current = project.start_date.replace(day=1)
+        while current <= end.replace(day=1):
+            add(str(current.year), overhead / months, "overhead")
+            current += relativedelta(months=1)
+    return {
+        year: {part: amount.quantize(Decimal("0.01")) for part, amount in parts.items()}
+        for year, parts in totals.items()
+    }

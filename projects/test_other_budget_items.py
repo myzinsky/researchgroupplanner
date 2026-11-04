@@ -1,0 +1,120 @@
+from datetime import date
+from decimal import Decimal
+
+from django.contrib.auth import get_user_model
+from django.test import TestCase, override_settings
+from django.urls import reverse
+
+from projects.models import OtherBudgetItem, OtherBudgetItemTransaction, Project
+
+
+STATIC_STORAGE = {
+    "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+    "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
+}
+
+
+@override_settings(STORAGES=STATIC_STORAGE)
+class OtherBudgetItemsPageTests(TestCase):
+    def setUp(self):
+        self.client.force_login(get_user_model().objects.create_user("user", password="x"))
+        self.project = Project.objects.create(
+            acronym="TEST", start_date=date(2025, 1, 1), end_date=date(2026, 12, 31), budget_total=Decimal("10000"),
+        )
+        self.travel = OtherBudgetItem.objects.create(project=self.project, title="Reisen", amount=Decimal("1000"))
+        self.conference = OtherBudgetItemTransaction.objects.create(
+            budget_item=self.travel, date=date(2025, 3, 1), amount=Decimal("400"), description="Konferenz",
+        )
+        OtherBudgetItemTransaction.objects.create(
+            budget_item=self.travel, date=date(2027, 2, 1), amount=Decimal("300"), description="Nach Laufzeit",
+        )
+
+    def test_lists_transactions_and_counts_only_project_years(self):
+        response = self.client.get(reverse("projects:other_budget_items", args=["TEST"]))
+
+        item = response.context["budget_items"][0]
+        self.assertEqual(item.used, Decimal("400"))
+        self.assertEqual(item.remain, Decimal("600"))
+        self.assertContains(response, "Konferenz")
+        self.assertContains(response, "außerhalb Laufzeit")
+
+    def test_details_page_links_to_overview(self):
+        response = self.client.get(reverse("projects:details", args=["TEST"]))
+
+        self.assertContains(response, reverse("projects:other_budget_items", args=["TEST"]))
+
+    def test_transaction_description_can_be_edited(self):
+        url = reverse("projects:other_budget_transaction_description", args=["TEST", self.conference.id])
+
+        response = self.client.post(url, {"description": " Konferenz Berlin "})
+
+        self.assertRedirects(
+            response, reverse("projects:other_budget_items", args=["TEST"]) + f"#transaction-{self.conference.id}",
+            fetch_redirect_response=False,
+        )
+        self.conference.refresh_from_db()
+        self.assertEqual(self.conference.description, "Konferenz Berlin")
+        self.assertContains(self.client.get(reverse("projects:other_budget_items", args=["TEST"])), "Konferenz Berlin")
+
+    def test_transaction_description_requires_matching_project(self):
+        Project.objects.create(
+            acronym="OTHER", start_date=date(2025, 1, 1), end_date=date(2026, 12, 31), budget_total=Decimal("1000"),
+        )
+
+        response = self.client.post(
+            reverse("projects:other_budget_transaction_description", args=["OTHER", self.conference.id]), {"description": "x"},
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_sap_reference_links_to_reconciliation(self):
+        from projects.models import SAPFund
+        from sap_integration.models import SAPImport, SAPPosition
+
+        fund = SAPFund.objects.create(fund_number="F-1", project=self.project)
+        sap_import = SAPImport.objects.create(fund=fund, file_name="export.xlsx")
+        position = SAPPosition.objects.create(sap_import=sap_import, reference="8000001", kind="travel", cost_type="7464")
+        self.conference.sap_id = "8000001, 9999999"
+        self.conference.save()
+
+        response = self.client.get(reverse("projects:other_budget_items", args=["TEST"]))
+
+        url = reverse("sap_integration:position_detail", args=[fund.id, position.id])
+        self.assertContains(response, f'<a href="{url}" title="Beleg im SAP-Abgleich öffnen">8000001</a>')
+        self.assertContains(response, ", 9999999")
+
+    def test_sap_status_per_transaction(self):
+        from projects.models import SAPFund
+        from sap_integration.models import SAPImport, SAPPosition
+
+        fund = SAPFund.objects.create(fund_number="F-2", project=self.project)
+        sap_import = SAPImport.objects.create(fund=fund, file_name="export.xlsx")
+        SAPPosition.objects.create(sap_import=sap_import, reference="8000002", kind="travel", cost_type="7464",
+                                   actual=Decimal("400.00"))
+        self.conference.sap_id = "8000002"
+        self.conference.save()
+
+        response = self.client.get(reverse("projects:other_budget_items", args=["TEST"]))
+
+        transactions = response.context["budget_items"][0].transactions
+        self.assertEqual(transactions[0].sap_status[0], "Ist")
+        self.assertEqual(transactions[1].sap_status[0], "Plan")
+        self.assertEqual(response.context["budget_items"][0].actual, Decimal("400.00"))
+
+    def test_projects_page_lists_running_and_completed_projects(self):
+        Project.objects.create(acronym="OLDPROJ", start_date=date(2020, 1, 1), end_date=date(2021, 12, 31),
+                               budget_total=Decimal("1000"))
+
+        response = self.client.get(reverse("projects:index"))
+
+        self.assertEqual([p.acronym for p in response.context["completed_projects"]], ["OLDPROJ"])
+        self.assertIn("TEST", [p.acronym for p in response.context["projects"]])
+        self.assertContains(response, "Abgeschlossene Projekte")
+
+    def test_description_rest_is_italic(self):
+        self.conference.description = "Konferenz Berlin\nHotel und Bahn\nRechnung folgt"
+        self.conference.save()
+
+        response = self.client.get(reverse("projects:other_budget_items", args=["TEST"]))
+
+        self.assertContains(response, "Konferenz Berlin<br><em>Hotel und Bahn<br>Rechnung folgt</em>")

@@ -252,6 +252,9 @@ SAP_BACKEND = os.getenv(
     'SAP_BACKEND',
     'sap_integration.backends.wuerzburg.WuerzburgWebGUIBackend',
 )
+# Upload of SAP Grants Management project exports (GM_E_4GBA) and their
+# reconciliation with the planning. Independent of the WebGUI download above.
+SAP_GM_IMPORT_ENABLED = env_bool('SAP_GM_IMPORT_ENABLED', False)
 
 # Cron Jobs Configuration
 # https://github.com/hartwork/django-crontab
