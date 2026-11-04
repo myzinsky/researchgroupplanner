@@ -3,6 +3,7 @@ import tempfile
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
@@ -14,7 +15,7 @@ from projects.models import OtherBudgetItem, OtherBudgetItemTransaction, Project
 from sap_integration.cache import load_year
 from sap_integration.category_rules import classify, digest
 from sap_integration.expense_config import FORMAT, apply_config, export_config, preview_config, read_config, load_local_config, local_config_path
-from sap_integration.expenses import apply_expense, build_expense_checks, expense_warnings, preview_expense
+from sap_integration.expenses import apply_expense, apply_expenses, build_expense_checks, bulk_expense_state, expense_warnings, preview_expense
 from sap_integration.forms import ExpenseApplyForm, ExpenseCategoryForm
 from sap_integration.models import SAPExpenseAudit, SAPExpenseBudgetMapping, SAPExpenseCategory, SAPExpenseLink
 from sap_integration.parser import DOCUMENT_COLUMNS, parse_downloaded_reports
@@ -586,3 +587,128 @@ class ExpenseTests(TestCase):
         SAPExpenseCategory.objects.bulk_create([SAPExpenseCategory(**row) for row in example_personnel_categories()])
         self.write([booking(financial_position="99-0901", position="Personalbuchung ohne Gehaltstext")])
         self.assertEqual(self.checks(), [])
+
+    def test_bulk_button_imports_new_mapped_bookings_directly_and_repeat_is_idempotent(self):
+        self.write([booking(), booking(document_number="SECOND", type="commitment", amount="125.00", booking_date="2026-04-01")])
+        url = reverse("sap_integration:expenses", args=[self.fund.pk]) + "?year=2026"
+        page = self.client.get(url)
+        self.assertContains(page, "Alles in Planung übernehmen (2)")
+        self.assertEqual(OtherBudgetItemTransaction.objects.count(), 0)
+        data = {"action": "bulk_apply", "bulk_state_token": page.context["bulk_state_token"]}
+        result = self.client.post(url, data, follow=True)
+        self.assertContains(result, "2 Buchung(en) in die Planung übernommen")
+        self.assertEqual(OtherBudgetItemTransaction.objects.count(), 2)
+        self.assertEqual(SAPExpenseLink.objects.count(), 2)
+        self.assertEqual(SAPExpenseAudit.objects.count(), 2)
+        self.assertEqual(set(SAPExpenseLink.objects.values_list("source_type", flat=True)), {"actual", "commitment"})
+        self.assertEqual(sum(t.amount for t in OtherBudgetItemTransaction.objects.all()), Decimal("525.00"))
+        repeated = self.client.post(url, data, follow=True)
+        self.assertContains(repeated, "2 bereits verknüpfte Buchung(en) nicht erneut angelegt")
+        self.assertEqual(OtherBudgetItemTransaction.objects.count(), 2)
+        self.assertEqual(SAPExpenseAudit.objects.count(), 2)
+
+    def test_bulk_skips_ambiguous_unmapped_and_unknown_bookings_with_reasons(self):
+        SAPExpenseCategory.objects.create(key="materials", label="Material", kind="other", exact_codes=["88000-0102"])
+        self.write([booking(), booking(document_number="UNKNOWN", financial_position="99000-9999"),
+                    booking(document_number="UNMAPPED", financial_position="88000-0102"),
+                    booking(document_number="DUPLICATE"), booking(document_number="DUPLICATE", amount="50.00")])
+        url = reverse("sap_integration:expenses", args=[self.fund.pk])
+        page = self.client.get(url)
+        self.assertEqual(page.context["bulk_count"], 1)
+        result = self.client.post(url, {"action": "bulk_apply", "bulk_state_token": page.context["bulk_state_token"]}, follow=True)
+        self.assertContains(result, "3 Buchung(en) ausgelassen")
+        self.assertContains(result, "Kategorie fehlt")
+        self.assertContains(result, "Budgetzuordnung fehlt")
+        self.assertContains(result, "Beleg muss geprüft werden")
+        self.assertEqual(OtherBudgetItemTransaction.objects.count(), 1)
+        self.assertEqual(SAPExpenseLink.objects.count(), 1)
+
+    def test_bulk_does_not_update_existing_links_or_guess_manual_plan_associations(self):
+        linked = self.apply()
+        manual = self.planned()
+        self.write([booking(amount="450.00"), booking(document_number="NEW", amount="125.00")])
+        url = reverse("sap_integration:expenses", args=[self.fund.pk])
+        page = self.client.get(url)
+        self.assertEqual(page.context["bulk_count"], 1)
+        self.client.post(url, {"action": "bulk_apply", "bulk_state_token": page.context["bulk_state_token"]})
+        linked.planner_transaction.refresh_from_db()
+        manual.refresh_from_db()
+        self.assertEqual(linked.planner_transaction.amount, Decimal("400.00"))
+        self.assertEqual(manual.amount, Decimal("1000.00"))
+        self.assertEqual(OtherBudgetItemTransaction.objects.count(), 3)
+
+    def test_bulk_revalidates_source_and_budget_mapping_without_a_second_confirmation(self):
+        url = reverse("sap_integration:expenses", args=[self.fund.pk])
+        page = self.client.get(url)
+        self.write([booking(amount="999.00")])
+        result = self.client.post(url, {"action": "bulk_apply", "bulk_state_token": page.context["bulk_state_token"]}, follow=True)
+        self.assertContains(result, "Daten seit dem Laden geändert")
+        self.assertEqual(OtherBudgetItemTransaction.objects.count(), 0)
+        page = self.client.get(url)
+        other_budget = OtherBudgetItem.objects.create(project=self.project, title="Anderes Budget", amount=2000)
+        SAPExpenseBudgetMapping.objects.filter(fund=self.fund, category=self.category).update(budget_item=other_budget)
+        result = self.client.post(url, {"action": "bulk_apply", "bulk_state_token": page.context["bulk_state_token"]}, follow=True)
+        self.assertContains(result, "Daten seit dem Laden geändert")
+        self.assertEqual(OtherBudgetItemTransaction.objects.count(), 0)
+
+    def test_bulk_is_scoped_to_the_selected_fund_and_year(self):
+        other_fund = SAPFund.objects.create(fund_number="OTHER-FUND", project=self.project)
+        SAPExpenseBudgetMapping.objects.create(fund=other_fund, category=self.category, budget_item=self.budget)
+        path = self.directory / "processed" / "2026.json"
+        payload = json.loads(path.read_text())
+        payload["funds"][other_fund.fund_number] = {"transactions": [booking(document_number="OTHER")]}
+        path.write_text(json.dumps(payload))
+        older = json.loads(json.dumps(payload))
+        older["year"] = 2025
+        older["funds"][self.fund.fund_number]["transactions"] = [booking(document_number="OLD", booking_date="2025-03-12")]
+        path.with_name("2025.json").write_text(json.dumps(older))
+        url = reverse("sap_integration:expenses", args=[self.fund.pk]) + "?year=2026"
+        page = self.client.get(url)
+        data = {"action": "bulk_apply", "bulk_state_token": page.context["bulk_state_token"]}
+        self.client.post(reverse("sap_integration:expenses", args=[other_fund.pk]) + "?year=2026", data)
+        self.assertEqual(OtherBudgetItemTransaction.objects.count(), 0)
+        self.client.post(url.replace("2026", "2025"), data)
+        self.assertEqual(OtherBudgetItemTransaction.objects.count(), 0)
+        self.client.post(url, data)
+        self.assertEqual(list(SAPExpenseLink.objects.values_list("fund_id", "year")), [(self.fund.pk, 2026)])
+
+    def test_bulk_requires_staff_active_adapter_and_valid_state_and_get_never_writes(self):
+        url = reverse("sap_integration:expenses", args=[self.fund.pk])
+        page = self.client.get(url)
+        data = {"action": "bulk_apply", "bulk_state_token": page.context["bulk_state_token"]}
+        self.client.get(url, data)
+        self.client.post(url, {"action": "bulk_apply", "bulk_state_token": "tampered"})
+        self.assertEqual(OtherBudgetItemTransaction.objects.count(), 0)
+        regular = get_user_model().objects.create_user("regular-bulk", password="x")
+        self.client.force_login(regular)
+        self.assertEqual(self.client.post(url, data).status_code, 302)
+        self.client.force_login(self.user)
+        with override_settings(SAP_ENABLED=False, SAP_GM_IMPORT_ENABLED=True):
+            self.assertEqual(self.client.post(url, data).status_code, 404)
+        self.assertEqual(OtherBudgetItemTransaction.objects.count(), 0)
+
+    def test_bulk_unexpected_error_rolls_back_all_records_and_loads_cache_once(self):
+        from sap_integration import expenses as service
+
+        self.write([booking(), booking(document_number="SECOND")])
+        checks = self.checks()
+        expected = {c.key: bulk_expense_state(c) for c in checks if c.can_bulk_apply}
+        original_save = service._save_expense
+        calls = 0
+
+        def fail_second(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                self.assertEqual(OtherBudgetItemTransaction.objects.count(), 1)
+                raise RuntimeError("Unexpected failure")
+            return original_save(*args, **kwargs)
+
+        with patch.object(service, "build_expense_checks", wraps=service.build_expense_checks) as build:
+            with patch.object(service, "_save_expense", side_effect=fail_second):
+                with self.assertRaisesMessage(RuntimeError, "Unexpected failure"):
+                    apply_expenses(self.directory, self.fund, 2026, expected_entries=expected, user=self.user)
+            self.assertEqual(build.call_count, 1)
+        self.assertEqual(OtherBudgetItemTransaction.objects.count(), 0)
+        self.assertEqual(SAPExpenseLink.objects.count(), 0)
+        self.assertEqual(SAPExpenseAudit.objects.count(), 0)

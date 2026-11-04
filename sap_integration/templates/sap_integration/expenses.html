@@ -16,6 +16,14 @@
 </form>
 {% if cache_error %}<div class="alert alert-warning">{{ cache_error }}</div>{% endif %}
 {% if not fund.project_id %}<div class="alert alert-warning">Dieser Fonds ist keinem Projekt zugeordnet. Eine Übernahme ist gesperrt.</div>{% endif %}
+{% if fund.project_id and not cache_error %}
+<form method="post" class="mb-2">
+    {% csrf_token %}
+    <input type="hidden" name="bulk_state_token" value="{{ bulk_state_token }}">
+    <button class="btn btn-primary" name="action" value="bulk_apply"{% if not bulk_count %} disabled{% endif %}>Alles in Planung übernehmen ({{ bulk_count }})</button>
+</form>
+<p class="small text-muted">Legt die {{ bulk_count }} noch nicht verknüpften, eindeutig zugeordneten Buchungen dieses Fonds und Geschäftsjahres auf den hinterlegten Planungsbudgets an. Wenn passende Vorplanungen vorhanden sind, ordne sie einzeln zu. Bereits verknüpfte Buchungen werden ausgelassen.</p>
+{% endif %}
 <div class="table-responsive"><table class="table table-bordered align-middle">
     <thead><tr><th>Datum / Beleg</th><th>Beschreibung / Finanzposition</th><th>Kategorie</th><th>Ist</th><th>Offenes Obligo</th><th>Status</th></tr></thead>
     <tbody>{% for check in checks %}<tr{% if check.source_type == 'commitment' %} class="table-secondary"{% endif %}>

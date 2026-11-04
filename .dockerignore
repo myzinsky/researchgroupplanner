@@ -12,4 +12,15 @@ db.sqlite3
 staticfiles/
 node_modules/
 .env
+.env.*
+.envrc
+# Deployment data is mounted at runtime, never shipped in an image.
+sap_data/
+data/
+backups/
+**/*.sqlite*
+**/*.db
+**/*.db-*
+**/*.xlsx
+**/*.xls
 *.log

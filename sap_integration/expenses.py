@@ -98,6 +98,10 @@ class ExpenseCheck:
         ) and (self.amount != 0 or self.link is not None)
 
     @property
+    def can_bulk_apply(self):
+        return self.link is None and self.can_apply and self.budget_item is not None
+
+    @property
     def status(self):
         if self.link and not self.link.is_active:
             return "Abgelöstes Obligo"
@@ -297,6 +301,11 @@ def apply_expense(data_dir, fund, year, source_key, data, *, expected_preview, u
     preview = preview_expense(check, data)
     if digest(preview) != digest(expected_preview):
         raise ValidationError("SAP-Daten, Verknüpfung oder Planung wurden inzwischen geändert. Bitte die Seite neu laden.")
+    return _save_expense(check, data, preview, user=user)
+
+
+def _save_expense(check, data, preview, *, user):
+    """Shared persistence, called only inside an atomic single/bulk action."""
     target = data.get("planner_transaction")
     if preview["replacement"]:
         SAPExpenseLink.objects.filter(pk=preview["replacement"]).update(is_active=False)
@@ -309,7 +318,7 @@ def apply_expense(data_dir, fund, year, source_key, data, *, expected_preview, u
     target.sap_id = check.reference
     target.full_clean()
     target.save()
-    link = check.link or SAPExpenseLink(fund=fund, year=year, source_key=check.key, source_type=check.source_type)
+    link = check.link or SAPExpenseLink(fund=check.fund, year=check.year, source_key=check.key, source_type=check.source_type)
     link.planner_transaction = target
     link.source_snapshot = check.snapshot
     link.planning_snapshot = {"main": transaction_state(target), "remainder": transaction_state(link.remainder_transaction)}
@@ -321,3 +330,64 @@ def apply_expense(data_dir, fund, year, source_key, data, *, expected_preview, u
                                            "replaced_link": preview["replacement"]},
                                    after=link.planning_snapshot, source_snapshot=check.snapshot)
     return link
+
+
+def bulk_expense_state(check):
+    return digest({"source": check.snapshot, "category": check.category.pk,
+                   "budget": check.budget_item.pk})
+
+
+@dataclass
+class BulkExpenseResult:
+    created: int = 0
+    already_linked: int = 0
+    skipped: list = field(default_factory=list)
+
+
+@transaction.atomic
+def apply_expenses(data_dir, fund, year, *, expected_entries, user):
+    """Create mapped, unlinked entries from one consistent source snapshot.
+
+    Never guess a link to an existing plan or update an already linked entry.
+    Re-reading once avoids reparsing the complete cache for every booking.
+    Known row conflicts are skipped using savepoints; unexpected errors roll
+    back the complete batch so no partial success is silently reported.
+    """
+    from django.db import IntegrityError
+
+    fund = SAPFund.objects.select_for_update().get(pk=fund.pk)
+    checks = build_expense_checks(data_dir, fund, year)
+    result = BulkExpenseResult()
+    seen = set()
+    for check in checks:
+        seen.add(check.key)
+        if check.link is not None:
+            result.already_linked += 1
+            continue
+        if not check.can_bulk_apply:
+            if check.blocking:
+                reason = "Beleg muss geprüft werden"
+            elif not check.category:
+                reason = "Kategorie fehlt"
+            elif not check.budget_item:
+                reason = "Budgetzuordnung fehlt"
+            else:
+                reason = "Keine übernehmbare Buchung"
+            result.skipped.append(reason)
+            continue
+        if expected_entries.get(check.key) != bulk_expense_state(check):
+            result.skipped.append("Daten seit dem Laden geändert")
+            continue
+        data = {"planner_transaction": None, "budget_item": check.budget_item}
+        try:
+            with transaction.atomic():
+                preview = preview_expense(check, data)
+                _save_expense(check, data, preview, user=user)
+        except ValidationError as error:
+            result.skipped.append(" ".join(error.messages))
+        except IntegrityError:
+            result.skipped.append("Buchung wurde inzwischen verknüpft")
+        else:
+            result.created += 1
+    result.skipped.extend("Buchung nicht mehr im Export" for key in expected_entries if key not in seen)
+    return result

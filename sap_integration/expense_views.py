@@ -1,7 +1,7 @@
 """Staff-only Würzburg configuration and confirmed expense reconciliation."""
 
 import json
-from collections import defaultdict
+from collections import Counter, defaultdict
 from decimal import Decimal
 
 from django.conf import settings
@@ -20,7 +20,10 @@ from projects.models import OtherBudgetItem, SAPFund
 from sap_integration.cache import available_years, load_year
 from sap_integration.category_rules import classify, digest
 from sap_integration.expense_config import apply_config, export_config, preview_config, read_config, load_local_config, local_config_path
-from sap_integration.expenses import apply_expense, build_expense_checks, preview_expense, transaction_state
+from sap_integration.expenses import (
+    apply_expense, apply_expenses, build_expense_checks, bulk_expense_state,
+    preview_expense, transaction_state,
+)
 from sap_integration.forms import ExpenseApplyForm, ExpenseCategoryForm, ExpenseConfigUploadForm
 from sap_integration.models import SAPExpenseBudgetMapping, SAPExpenseCategory
 from sap_integration.config import financial_positions_enabled
@@ -28,6 +31,7 @@ from sap_integration.config import financial_positions_enabled
 
 CONFIG_SALT = "wuerzburg-category-preview-v1"
 EXPENSE_STATE_SALT = "wuerzburg-expense-state-v1"
+BULK_EXPENSE_SALT = "wuerzburg-expense-bulk-v1"
 
 
 def ensure_enabled():
@@ -136,6 +140,23 @@ def expenses(request, fund_id):
     ensure_enabled()
     fund = load_fund(fund_id)
     year, years = selected_year(request)
+    if request.method == "POST" and request.POST.get("action") == "bulk_apply":
+        try:
+            signed = signing.loads(request.POST.get("bulk_state_token", ""), salt=BULK_EXPENSE_SALT, max_age=3600)
+            if signed["user"] != request.user.pk or signed["fund"] != fund.pk or signed["year"] != year:
+                raise ValidationError("Diese Ansicht gehört zu einem anderen Abgleich. Bitte die Seite neu laden.")
+            result = apply_expenses(settings.SAP_DATA_DIR, fund, year,
+                                    expected_entries=signed["entries"], user=request.user)
+            messages.success(request, f"{result.created} Buchung(en) in die Planung übernommen. "
+                             f"{result.already_linked} bereits verknüpfte Buchung(en) nicht erneut angelegt.")
+            if result.skipped:
+                reasons = "; ".join(f"{count} × {reason}" for reason, count in Counter(result.skipped).items())
+                messages.warning(request, f"{len(result.skipped)} Buchung(en) ausgelassen: {reasons}.")
+        except (ValidationError, signing.BadSignature, ValueError, OSError) as error:
+            messages.error(request, error_message(error))
+        except IntegrityError:
+            messages.error(request, "Die Daten wurden inzwischen geändert. Bitte den Abgleich neu laden.")
+        return redirect(f"{reverse('sap_integration:expenses', args=[fund.pk])}?year={year}")
     if request.method == "POST" and request.POST.get("action") == "map":
         category = get_object_or_404(SAPExpenseCategory, pk=request.POST.get("category"), kind__in=["travel", "other"])
         budget_id = request.POST.get("budget_item")
@@ -163,10 +184,14 @@ def expenses(request, fund_id):
     category_rows = [{"category": category, "budget_id": mapping_by_category.get(category.pk),
                       **summaries[category.pk]} for category in SAPExpenseCategory.objects.exclude(kind="staff")]
     show_all = request.GET.get("all") == "1"
+    bulk_entries = {check.key: bulk_expense_state(check) for check in checks if check.can_bulk_apply}
+    bulk_token = signing.dumps({"user": request.user.pk, "fund": fund.pk, "year": year, "entries": bulk_entries},
+                               salt=BULK_EXPENSE_SALT, compress=True)
     return render(request, "sap_integration/expenses.html", {
         "fund": fund, "year": year, "years": years, "checks": [c for c in checks if show_all or c.is_open],
         "show_all": show_all, "open_count": sum(c.is_open for c in checks), "cache_error": cache_error,
         "category_rows": category_rows, "unknown_totals": summaries[None],
+        "bulk_count": len(bulk_entries), "bulk_state_token": bulk_token,
         "budget_items": OtherBudgetItem.objects.filter(project_id=fund.project_id) if fund.project_id else [],
     })
 
