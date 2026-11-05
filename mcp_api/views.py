@@ -19,6 +19,10 @@ INSTRUCTIONS = (
     "Planungswerkzeug einer Forschungsgruppe: Drittmittelprojekte mit Budgets, Mitarbeitende mit Anstellungen, "
     "Finanzierungszuordnungen, Gehältern (TV-L) und Umbuchungen sowie der Abgleich mit SAP. Beträge in Euro, "
     "Datumsangaben im Format JJJJ-MM-TT. Schreibende Werkzeuge stehen nur Mitarbeitenden mit Staff-Rechten zur Verfügung."
+    " SAP hat zwei getrennte Datenwege. Bei SAP-Fragen zuerst get_sap_status verwenden. "
+    "Würzburg/WebGUI: get_sap_statement liest die bereits aufbereiteten Kontoauszüge inklusive Personal, "
+    "get_sap_reconciliation den Reise-/Sachmittelabgleich. Dafür keine GM-Exceldateien anfordern. "
+    "import_sap_export, map_sap_cost_type, create_transaction_from_sap und apply_sap_salaries gehören ausschließlich zum GM-Verfahren."
 )
 
 # JSON-RPC error codes
@@ -42,13 +46,15 @@ def _handle(message, user):
     message_id, method, params = message["id"], message["method"], message.get("params") or {}
 
     if method == "initialize":
+        from .sap_reads import enabled_sources
+
         requested = params.get("protocolVersion")
         version = requested if requested in SUPPORTED_PROTOCOL_VERSIONS else SUPPORTED_PROTOCOL_VERSIONS[0]
         return _result(message_id, {
             "protocolVersion": version,
             "capabilities": {"tools": {"listChanged": False}},
             "serverInfo": SERVER_INFO,
-            "instructions": INSTRUCTIONS,
+            "instructions": INSTRUCTIONS + " Aktive SAP-Verfahren: " + (", ".join(enabled_sources()) or "keines") + ".",
         })
     if method == "ping":
         return _result(message_id, {})

@@ -366,7 +366,7 @@ def list_staff(user, include_former=False):
 @tool(
     "get_staff_member",
     "Details einer Person: Anstellungen (Entgeltgruppe, Stufe), Zuordnungen mit IDs, offene Umbuchungen, "
-    "Monatsgehälter (Planung und SAP-Ist) und SAP-Mittelreservierungen mit Hinweisen.",
+    "Monatsgehälter (Planung und GM-SAP-Ist) und GM-Mittelreservierungen. Für WebGUI-Ist get_sap_statement oder list_warnings verwenden.",
     {"staff_id": {"type": "integer"}, "name": {"type": "string", "description": "Vor- und/oder Nachname"}},
 )
 def get_staff_member(user, staff_id=None, name=None):
@@ -449,39 +449,54 @@ def list_warnings(user, include_ignored=False, severity=None, search=None):
 
 
 @tool(
+    "get_sap_status",
+    "Zeigt die aktiven SAP-Verfahren, konfigurierten Fonds und verfügbaren WebGUI-Geschäftsjahre. "
+    "Bei SAP-Fragen zuerst dieses Werkzeug verwenden. Würzburg/WebGUI liest vorhandene Downloads, "
+    "GM liest importierte Projektexporte. Keine Zugangsdaten, kein Download und keine Änderungen.",
+    {"acronym": {"type": "string", "description": "Optional auf ein Projekt beschränken"}},
+)
+def get_sap_status(user, acronym=None):
+    from .sap_reads import status
+
+    return status(acronym)
+
+
+@tool(
+    "get_sap_statement",
+    "Liest Würzburger SAP-WebGUI-Kontoauszüge: Budget, Ist, offenes Obligo und unveränderte Einzelbuchungen "
+    "einschließlich Personal, Finanzposition, Kategorie, Datum und Belegreferenzen. "
+    "Keine GM-Exceldatei nötig; verwendet den letzten aufbereiteten Download. "
+    "Ohne year das neueste verfügbare Jahr der Auswahl. Filter und Seitennavigation sind optional.",
+    {
+        "acronym": {"type": "string"},
+        "fund_number": {"type": "string", "description": "Optional eine Fondsnummer aus get_sap_status"},
+        "year": {"type": "integer"},
+        "transaction_type": {"type": "string", "enum": ["all", "actual", "commitment"]},
+        "financial_position": {"type": "string"},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 200},
+        "offset": {"type": "integer", "minimum": 0, "default": 0},
+    },
+)
+def get_sap_statement(user, **arguments):
+    from .sap_reads import statement
+
+    return statement(**arguments)
+
+
+@tool(
     "get_sap_reconciliation",
-    "Offene Punkte des SAP-Abgleichs eines Projekts (fehlende oder abweichende Positionen mit Befunden).",
-    {"acronym": {"type": "string"}},
+    "Offene Punkte des SAP-Abgleichs eines Projekts. source=auto berücksichtigt die aktivierten Verfahren: "
+    "Würzburg/WebGUI (Reisen und Sachmittel aus dem JSON-Cache, optional year) und/oder GM-Projektexporte. "
+    "Für vollständige WebGUI-Kontoauszüge und Personalbuchungen get_sap_statement verwenden. "
+    "Bei WebGUI keinen GM-Projektexport anfordern.",
+    {"acronym": {"type": "string"}, "source": {"type": "string", "enum": ["auto", "wuerzburg", "gm"]},
+     "year": {"type": "integer", "description": "Optionales Geschäftsjahr für WebGUI; GM umfasst den Projektexport"}},
     required=["acronym"],
 )
-def get_sap_reconciliation(user, acronym):
-    from sap_integration.crosscheck import build_reconciliation
+def get_sap_reconciliation(user, acronym, source="auto", year=None):
+    from .sap_reads import reconciliation
 
-    project = _project(acronym)
-    result = []
-    for fund in project.sap_funds.all():
-        reconciliation = build_reconciliation(fund)
-        if reconciliation is None:
-            continue
-        result.append({
-            "psp_element": fund.fund_number,
-            "export_until": _day(reconciliation.sap_import.last_booking),
-            "open_positions": [
-                {
-                    "sap_reference": c.position.reference,
-                    "kind": c.position.get_kind_display(),
-                    "title": c.position.person_name or c.position.title,
-                    "status": c.status_label,
-                    "actual": _money(c.position.actual),
-                    "commitment": _money(c.position.commitment),
-                    "findings": c.findings,
-                }
-                for c in reconciliation.open_checks
-            ],
-        })
-    if not result:
-        raise ToolError(f"Für {project.acronym} liegt kein SAP-Projektexport vor.")
-    return {"project": project.acronym, "funds": result}
+    return reconciliation(acronym, source, year)
 
 
 class _DryRun(Exception):
@@ -498,7 +513,7 @@ def _import_dirs():
 
 @tool(
     "import_sap_export",
-    "Importiert SAP-Projektexporte (GM_E_4GBA, .xlsx) aus lokalen Dateien wie die Upload-Maske unter Ist-Stand. "
+    "Nur SAP Grants Management (GM): importiert Projektexporte (GM_E_4GBA, .xlsx) wie die Upload-Maske. Für Würzburg/WebGUI stattdessen get_sap_statement verwenden. "
     "Nur Dateien aus SAP_IMPORT_DIRS (Standard ~/Downloads). Ein Import ersetzt den vorherigen des Fonds. "
     "dry_run: nur prüfen, nichts speichern.",
     {
@@ -1434,7 +1449,7 @@ def set_monthly_salaries(user, employment_id, salaries, dry_run=False):
 
 @tool(
     "apply_sap_salaries",
-    "Übernimmt die SAP-Ist-Gehälter der verknüpften SAP-Positionen (sap_reference der Zuordnungen) als geplante "
+    "Nur GM-Projektexporte: übernimmt die Ist-Gehälter der verknüpften SAP-Positionen (sap_reference der Zuordnungen) als geplante "
     "Monatsgehälter der Anstellung, wie „Gehälter übernehmen“ auf der SAP-Positionsseite. Andere Monate bleiben "
     "unverändert. dry_run=true prüft nur.",
     {
@@ -1874,7 +1889,7 @@ def _sap_fund(psp_element):
 
 @tool(
     "map_sap_cost_type",
-    "Ordnet eine SAP-E/A-Art eines PSP-Elements einem Budget des Projekts zu (wie im SAP-Abgleich). "
+    "Nur GM-Projektexporte: ordnet eine SAP-E/A-Art eines PSP-Elements einem Budget zu. Kein Würzburger Finanzpositionsmapping. "
     "kind=other (Standard) oder staff; budget_item_id=null entfernt die Zuordnung. dry_run=true prüft nur.",
     {
         "psp_element": {"type": "string", "description": "z. B. 1/070004900"},
@@ -1917,7 +1932,7 @@ def map_sap_cost_type(user, psp_element, cost_type, budget_item_id, kind="other"
 
 @tool(
     "create_transaction_from_sap",
-    "Legt für eine SAP-Sachmittelposition (Referenz aus get_sap_reconciliation) eine geplante Buchung im "
+    "Nur GM-Projektexporte: legt für eine SAP-Sachmittelposition (Referenz aus get_sap_reconciliation mit source=gm) eine geplante Buchung im "
     "angegebenen Sachmittelbudget an, mit Betrag, Datum und Beschreibung aus SAP (wie „Planungseintrag anlegen“). "
     "dry_run=true prüft nur.",
     {

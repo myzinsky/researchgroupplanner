@@ -271,6 +271,24 @@ preview the result and the cost change per budget. Write calls are written to
 the `mcp_api` logger (level INFO). Serve the endpoint over HTTPS only, since the token is sent
 with every request.
 
+SAP read tools distinguish the configured integrations automatically.
+Start with `get_sap_status` to discover active sources, fund numbers and
+available fiscal years. `get_sap_statement` reads the last processed Würzburg
+WebGUI downloads, including budgets, actuals, open commitments, personnel
+postings, financial positions and document references. It supports project,
+fund, year and transaction filters plus pagination. It preserves original
+rows; adjusted display totals are labeled separately. No SAP login, download
+or GM Excel upload is triggered by these read tools.
+
+`get_sap_reconciliation` selects active sources with `source="auto"`; it can
+also select `"wuerzburg"` or `"gm"` explicitly. For WebGUI it reports open
+travel and other-expense reconciliation issues, while complete personnel
+bookings remain available through `get_sap_statement` and salary warnings
+through `list_warnings`. The existing GM write tools remain GM-specific.
+Older WebGUI caches can be read without document fields; reprocess existing
+exports with `parse_sap` to make those fields available. Clients may need to
+reconnect or refresh their tool list after updating the server.
+
 ## Deployment-Specific Features
 
 Several controlling features can be adapted to the organization through
