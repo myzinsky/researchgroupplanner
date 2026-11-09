@@ -1,0 +1,33 @@
+{% extends "admin/base_site.html" %}
+{% load l10n %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+  <a href="{% url 'admin:index' %}">Start</a> ›
+  <a href="{% url 'admin:sap_integration_sapexpenselink_changelist' %}">SAP-Ausgabenverknüpfungen</a> ›
+  Verknüpfungen lösen
+</div>
+{% endblock %}
+
+{% block content %}
+<p>Die ausgewählten Verknüpfungen werden zusammen mit ihren Übernahmeprotokollen archiviert und anschließend gelöst.</p>
+<p><strong>Die Planungseinträge mit ihren Beträgen bleiben bestehen.</strong> Ihre SAP-Referenz wird entfernt, wenn keine weitere Verknüpfung darauf verweist. Danach kannst du die betroffenen Planungsbudgets unter „Other budget items“ löschen und neu anlegen.</p>
+<p>Die SAP-Buchungen erscheinen danach wieder als offen im Abgleich. Lösche zuerst die alten Planungseinträge oder ordne die SAP-Buchungen gezielt vorhandenen Planungseinträgen zu. Eine erneute Sammelübernahme würde zusätzliche Planungseinträge anlegen.</p>
+<p>Die SAP-Rohdaten bleiben erhalten. Das Archiv findest du unter „Gelöste SAP-Ausgabenverknüpfungen“.</p>
+<ul>
+{% for link in links %}
+  <li>Verknüpfung {{ link.pk }} · {{ link.fund }} · {{ link.year|unlocalize }} · {{ link.get_source_type_display }} · {{ link.planner_transaction }}{% if not link.is_active %} · inaktiv{% endif %}{% if link.remainder_transaction %}<br>Zusätzlicher Planungseintrag: {{ link.remainder_transaction }}{% endif %}</li>
+{% endfor %}
+</ul>
+<form method="post">
+  {% csrf_token %}
+  {% for link in links %}<input type="hidden" name="_selected_action" value="{{ link.pk|unlocalize }}">{% endfor %}
+  <input type="hidden" name="action" value="unlink_selected">
+  <input type="hidden" name="unlink_state" value="{{ unlink_state }}">
+  <input type="hidden" name="confirm_unlink" value="yes">
+  <div class="submit-row">
+    <input type="submit" value="Verknüpfungen jetzt lösen">
+    <a href="{% url 'admin:sap_integration_sapexpenselink_changelist' %}" class="button">Abbrechen</a>
+  </div>
+</form>
+{% endblock %}

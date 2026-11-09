@@ -310,6 +310,8 @@ class SAPExpenseLink(models.Model):
     confirmed_at = models.DateTimeField(auto_now=True)
 
     class Meta:
+        verbose_name = "SAP-Ausgabenverknüpfung"
+        verbose_name_plural = "SAP-Ausgabenverknüpfungen"
         constraints = [
             models.UniqueConstraint(fields=["fund", "year", "source_key"], name="unique_wuerzburg_expense_source"),
             models.UniqueConstraint(fields=["planner_transaction"], condition=models.Q(is_active=True), name="unique_active_wuerzburg_target"),
@@ -324,3 +326,24 @@ class SAPExpenseAudit(models.Model):
     before = models.JSONField(default=dict)
     after = models.JSONField(default=dict)
     source_snapshot = models.JSONField(default=dict)
+
+
+class SAPExpenseUnlinkArchive(models.Model):
+    original_link_id = models.PositiveBigIntegerField("Ursprüngliche Verknüpfung")
+    fund_number = models.CharField("Fonds", max_length=100)
+    year = models.PositiveIntegerField("Jahr")
+    budget_label = models.TextField("Planungsbudget")
+    created_at = models.DateTimeField("Gelöst am", auto_now_add=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, verbose_name="Gelöst von", null=True,
+        on_delete=models.SET_NULL,
+    )
+    snapshot = models.JSONField("Archivdaten")
+
+    class Meta:
+        ordering = ("-created_at", "-pk")
+        verbose_name = "Gelöste SAP-Ausgabenverknüpfung"
+        verbose_name_plural = "Gelöste SAP-Ausgabenverknüpfungen"
+
+    def __str__(self):
+        return f"Verknüpfung {self.original_link_id} / {self.fund_number} / {self.year}"
