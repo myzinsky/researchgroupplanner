@@ -452,7 +452,7 @@ def _format_month_ranges(months):
     return ", ".join(start if start == end else f"{start} – {end}" for start, end in ranges)
 
 
-def sap_actuals_by_year():
+def sap_actuals_by_year(*, excluded_fund_years=()):
     """Actual costs per calendar year from the latest import of each project fund (without income).
 
     Staff payroll counts by salary month, other bookings by booking date.
@@ -472,5 +472,7 @@ def sap_actuals_by_year():
                     if b.get("value_type") in ACTUAL_VALUE_TYPES and b.get("date")
                 )
             for year, amount in entries:
+                if (fund.pk, year) in excluded_fund_years:
+                    continue
                 totals[year] = totals.get(year, Decimal("0.00")) + Decimal(amount)
     return {year: amount.quantize(Decimal("0.01")) for year, amount in totals.items() if amount}

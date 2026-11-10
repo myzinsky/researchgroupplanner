@@ -14,7 +14,7 @@
         davon Overhead €&nbsp;{{ funds_split.overhead }} ·
         geplant (ohne Overhead) €&nbsp;{{ funds_split.planned }} ·
         noch nicht verplant €&nbsp;{{ funds_split.unplanned }}
-        <br>SAP-Ist bisher (Projektexporte) €&nbsp;{{ funds_split.actual }}
+        <br>SAP-Ist bisher: {% if funds_split.actual is not None %}€&nbsp;{{ funds_split.actual }}{% else %}keine SAP-Ist-Daten vorhanden{% endif %}
     </div>
 </div>
 
@@ -22,8 +22,13 @@
     <strong>Mittel</strong>: Projektbudgets gleichmäßig über die Laufzeit verteilt ·
     <strong>Overhead</strong>: gleichmäßig über die Laufzeit ·
     <strong>Geplant</strong>: Personalkosten aus den Zuordnungen, Sachmittel nach Buchungsdatum ·
-    <strong>SAP-Ist</strong>: bezahlte Beträge aus den Projektexporten (Personal nach Gehaltsmonat, ohne Mittelabrufe).
+    <strong>SAP-Ist</strong>: gebuchte Ausgaben aus den SAP-Exporten der Projekte, unabhängig von der Übernahme in die Planung
+    (Personal nach Gehaltsmonat, sonst nach Buchungsdatum; ohne Obligo und Mittelabrufe).
+    {% if sap_statistics_sources %}<br>SAP-Datenquelle: {{ sap_statistics_sources|join:" · " }}.{% endif %}
 </p>
+{% for note in sap_statistics_notes %}
+    <div class="alert alert-info" role="alert">{{ note }}</div>
+{% endfor %}
 
 <div class="card mb-4">
     <div class="card-body">

@@ -594,12 +594,13 @@ def get_statistics(user):
     from controlling.views import funds_by_year
     from projects.models import Project
     from projects.utils import planned_expenses_by_year
-    from sap_integration.crosscheck import sap_actuals_by_year
+    from sap_integration.statistics import sap_statistics
 
     projects = list(Project.objects.prefetch_related("overheadbudgetitem_set"))
     funds = funds_by_year(projects)
     planned = planned_expenses_by_year(projects)
-    actuals = sap_actuals_by_year()
+    sap_data = sap_statistics()
+    actuals = sap_data.actuals
     rows = []
     for year in sorted(set(funds) | set(planned) | set(actuals)):
         parts = planned.get(year, {})
@@ -610,7 +611,8 @@ def get_statistics(user):
             "planned_costs": _money(parts.get("staff", Decimal("0")) + parts.get("other", Decimal("0"))),
             "sap_actual": _money(actuals.get(year)),
         })
-    return {"total_funds": _money(sum((p.budget_total for p in projects), Decimal("0"))), "years": rows}
+    return {"total_funds": _money(sum((p.budget_total for p in projects), Decimal("0"))), "years": rows,
+            "sap_sources": sap_data.sources, "sap_notes": sap_data.notes}
 
 
 # --- write tools (staff only) ------------------------------------------------

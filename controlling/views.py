@@ -1048,10 +1048,11 @@ def statistics(request):
         overhead_overall_total = sum(overhead_totals_list, Decimal("0.00")).quantize(Decimal("0.01"))
 
     # Funds (spread), planned expenses and SAP actuals per year side by side.
-    from sap_integration.crosscheck import sap_actuals_by_year
+    from sap_integration.statistics import sap_statistics
 
     planned = planned_expenses_by_year(list(projects.prefetch_related("overheadbudgetitem_set")))
-    actuals = sap_actuals_by_year()
+    sap_data = sap_statistics()
+    actuals = sap_data.actuals
     comparison_years = sorted(set(sorted_years) | set(planned) | set(actuals))
     comparison_rows = []
     empty = {"staff": Decimal("0.00"), "other": Decimal("0.00"), "overhead": Decimal("0.00")}
@@ -1072,7 +1073,7 @@ def statistics(request):
     funds_split = {
         "overhead": overhead_total,
         "planned": planned_total,
-        "actual": sum((row["actual"] or Decimal("0.00") for row in comparison_rows), Decimal("0.00")),
+        "actual": sum(actuals.values(), Decimal("0.00")) if actuals else None,
         "unplanned": total_third_party_funds - overhead_total - planned_total,
     }
 
@@ -1083,7 +1084,9 @@ def statistics(request):
         "comparison_planned": [float(row["planned"]) for row in comparison_rows],
         "comparison_overhead": [float(row["overhead"]) for row in comparison_rows],
         "funds_split": funds_split,
-        "comparison_actual": [float(row["actual"] or 0) for row in comparison_rows],
+        "comparison_actual": [float(row["actual"]) if row["actual"] is not None else None for row in comparison_rows],
+        "sap_statistics_sources": sap_data.sources,
+        "sap_statistics_notes": sap_data.notes,
         "statistics_years": sorted_years,
         "statistics_yearly_values": [float(value) for value in yearly_values],
         "statistics_cumulative_values": [float(value) for value in cumulative_values],

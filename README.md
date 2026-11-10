@@ -272,6 +272,16 @@ the `mcp_api` logger (level INFO). Serve the endpoint over HTTPS only, since the
 with every request.
 
 SAP read tools distinguish the configured integrations automatically.
+The statistics page and `get_statistics` use the same SAP actuals: processed
+WebGUI year caches when that integration is active, and the latest GM import
+per project fund when GM is active. Actuals do not require planning links;
+commitments and funding receipts are excluded. Payroll uses the salary year,
+other expenses the booking year. For a fund/year covered by both sources,
+the WebGUI cache takes precedence to avoid counting the same costs twice.
+Missing data remains distinct from known zero actuals. Only active project
+funds are read from WebGUI caches; universal funds and annual pools are not
+part of the third-party project statistics.
+
 Start with `get_sap_status` to discover active sources, fund numbers and
 available fiscal years. `get_sap_statement` reads the last processed Würzburg
 WebGUI downloads, including budgets, actuals, open commitments, personnel
