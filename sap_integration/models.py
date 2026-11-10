@@ -310,8 +310,8 @@ class SAPExpenseLink(models.Model):
     confirmed_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        verbose_name = "SAP-Ausgabenverknüpfung"
-        verbose_name_plural = "SAP-Ausgabenverknüpfungen"
+        verbose_name = "SAP-Ausgabenverknüpfung (Finanzposition)"
+        verbose_name_plural = "SAP-Ausgabenverknüpfungen (Finanzposition)"
         constraints = [
             models.UniqueConstraint(fields=["fund", "year", "source_key"], name="unique_wuerzburg_expense_source"),
             models.UniqueConstraint(fields=["planner_transaction"], condition=models.Q(is_active=True), name="unique_active_wuerzburg_target"),
@@ -342,8 +342,8 @@ class SAPExpenseUnlinkArchive(models.Model):
 
     class Meta:
         ordering = ("-created_at", "-pk")
-        verbose_name = "Gelöste SAP-Ausgabenverknüpfung"
-        verbose_name_plural = "Gelöste SAP-Ausgabenverknüpfungen"
+        verbose_name = "Gelöste SAP-Ausgabenverknüpfung (Finanzposition)"
+        verbose_name_plural = "Gelöste SAP-Ausgabenverknüpfungen (Finanzposition)"
 
     def __str__(self):
         return f"Verknüpfung {self.original_link_id} / {self.fund_number} / {self.year}"
