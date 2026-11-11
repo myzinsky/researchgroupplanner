@@ -1,43 +1,43 @@
 <style>
     /* Planned employments: light fill, dashed border, dark text; overrides inline item colours. */
     .vis-item.status-planned {
-        background-color: #fff3cd !important;
+        background-color: var(--gp-note) !important;
         background-image: none !important;
-        border: 2px dashed #b58105 !important;
+        border: 2px dashed var(--gp-warning) !important;
     }
 
     .vis-item.status-planned .vis-item-content {
-        color: #5c4200 !important;
+        color: var(--gp-warning-emphasis) !important;
         font-style: italic;
     }
 
     .vis-item.status-rebook,
     .vis-item.allocation-rebook {
-        border: 2px dashed #6f42c1 !important;
-        background-image: repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.35) 0 6px, transparent 6px 12px) !important;
+        border: 2px dashed var(--gp-warning) !important;
+        background-image: repeating-linear-gradient(45deg, rgba(var(--gp-background-rgb), 0.35) 0 6px, transparent 6px 12px) !important;
     }
 
     /* Outgoing part of an open Umbuchung, drawn over the source allocation. */
     .vis-item.allocation-rebook-out {
-        background-color: rgba(255, 255, 255, 0.8) !important;
-        background-image: repeating-linear-gradient(45deg, rgba(111, 66, 193, 0.15) 0 6px, transparent 6px 12px) !important;
-        border: 2px dashed #6f42c1 !important;
+        background-color: rgba(var(--gp-background-rgb), 0.8) !important;
+        background-image: repeating-linear-gradient(45deg, rgba(var(--gp-warning-rgb), 0.15) 0 6px, transparent 6px 12px) !important;
+        border: 2px dashed var(--gp-warning) !important;
     }
 
     .vis-item.allocation-rebook-out .vis-item-content {
-        color: #4b2a85 !important;
+        color: var(--gp-warning-emphasis) !important;
     }
 
     /* SAP contract period (Mittelreservierung), drawn as a thin bar under the allocations. */
     .vis-item.sap-contract {
-        background-color: #e8f5ee !important;
+        background-color: var(--gp-success-subtle) !important;
         background-image: none !important;
-        border: 1px solid #198754 !important;
+        border: 1px solid var(--gp-success) !important;
         font-size: 0.7rem;
     }
 
     .vis-item.sap-contract .vis-item-content {
-        color: #146c43 !important;
+        color: var(--gp-success-emphasis) !important;
         padding: 0 4px;
     }
 

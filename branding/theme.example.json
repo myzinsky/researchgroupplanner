@@ -1,0 +1,10 @@
+{
+  "primary": "#02246C",
+  "secondary": "#D2D4D5",
+  "success": "#016E3A",
+  "danger": "#EB6C5F",
+  "warning": "#EF861F",
+  "note": "#FEEFD6",
+  "background": "#FFFFFF",
+  "foreground": "#000000"
+}

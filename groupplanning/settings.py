@@ -235,6 +235,8 @@ ANNUAL_POOLS_ENABLED = env_bool('ANNUAL_POOLS_ENABLED', True)
 # under static/ and pointing this at it. Set to an empty string to hide
 # the logo entirely.
 BRAND_LOGO = os.getenv('BRAND_LOGO', 'controlling/img/Symbol_White.svg')
+# Optional semantic colour overrides; independent of the selected SAP backend.
+BRAND_THEME_FILE = env_path('BRAND_THEME_FILE', BASE_DIR / 'branding' / 'theme.json')
 
 # Optional SAP WebGUI integration. Credentials are only read by the sync command.
 SAP_ENABLED = env_bool('SAP_ENABLED', False)

@@ -211,6 +211,8 @@
         var plannedValues = JSON.parse(document.getElementById('stats-comparison-planned').textContent);
         var overheadValues = JSON.parse(document.getElementById('stats-comparison-overhead').textContent);
         var actualValues = JSON.parse(document.getElementById('stats-comparison-actual').textContent);
+        Chart.defaults.color = gpTheme.color('muted');
+        Chart.defaults.borderColor = gpTheme.color('secondary');
 
         var canvas = document.getElementById('thirdPartyFundsChart');
         if (!canvas || !years.length) {
@@ -225,8 +227,8 @@
                         type: 'bar',
                         label: 'Mittel (verteilt, inkl. Overhead)',
                         data: yearlyValues,
-                        backgroundColor: '#004990',
-                        borderColor: '#003a73',
+                        backgroundColor: gpTheme.color('primary'),
+                        borderColor: gpTheme.color('primary'),
                         borderWidth: 1,
                         stack: 'funds',
                         yAxisID: 'y',
@@ -235,8 +237,8 @@
                         type: 'bar',
                         label: 'Geplant (ohne Overhead)',
                         data: plannedValues,
-                        backgroundColor: '#8fb8de',
-                        borderColor: '#4e78b4',
+                        backgroundColor: gpTheme.color('primary-soft'),
+                        borderColor: gpTheme.color('primary'),
                         borderWidth: 1,
                         stack: 'planned',
                         yAxisID: 'y',
@@ -245,8 +247,8 @@
                         type: 'bar',
                         label: 'Overhead',
                         data: overheadValues,
-                        backgroundColor: '#c9b6e8',
-                        borderColor: '#6f42c1',
+                        backgroundColor: gpTheme.color('warning'),
+                        borderColor: gpTheme.color('warning'),
                         borderWidth: 1,
                         stack: 'planned',
                         yAxisID: 'y',
@@ -255,8 +257,8 @@
                         type: 'bar',
                         label: 'SAP-Ist',
                         data: actualValues,
-                        backgroundColor: '#198754',
-                        borderColor: '#146c43',
+                        backgroundColor: gpTheme.color('success'),
+                        borderColor: gpTheme.color('success'),
                         borderWidth: 1,
                         stack: 'actual',
                         yAxisID: 'y',

@@ -14,6 +14,7 @@ controlling/static/vendor/
 staticfiles/
 branding/*
 !branding/.gitkeep
+!branding/theme.example.json
 sap_data/
 .DS_Store
 db.sqlite3.bak-*

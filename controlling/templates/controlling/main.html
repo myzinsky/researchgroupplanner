@@ -40,9 +40,9 @@
 
 <style>
     .timeline-scroll {
-        border: 1px solid #d6d6d6;
+        border: 1px solid var(--gp-secondary);
         border-radius: 8px;
-        background: #fff;
+        background: var(--gp-background);
         overflow-x: hidden;
         overflow-y: visible;
         box-sizing: border-box;
@@ -75,7 +75,7 @@
     }
 
     .vis-item .vis-item-content {
-        color: #ffffff !important;
+        color: inherit !important;
     }
 
     #timeline_projects .vis-item,
@@ -99,9 +99,9 @@
     }
 
     .vis-labelset .vis-label {
-        border-right: 1px solid #ddd;
+        border-right: 1px solid var(--gp-secondary);
         font-weight: 600;
-        background: #fff;
+        background: var(--gp-background);
         width: 200px !important;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -128,20 +128,20 @@
         display: none;
         max-width: 560px;
         padding: 0.65rem 0.8rem;
-        background: #f6f5ef;
-        border: 1px solid #8f8d85;
+        background: var(--gp-note);
+        border: 1px solid var(--gp-secondary);
         border-radius: 6px;
-        box-shadow: 0 6px 24px rgba(0, 0, 0, 0.16);
-        color: #111;
+        box-shadow: 0 6px 24px rgba(var(--gp-foreground-rgb), 0.16);
+        color: var(--gp-foreground);
         line-height: 1.35;
         pointer-events: none;
         white-space: normal;
     }
 
     .vis-item.milestone-point {
-        background-color: #ba3633 !important;
-        border-color: #ba3633 !important;
-        color: #ba3633 !important;
+        background-color: var(--gp-danger) !important;
+        border-color: var(--gp-danger) !important;
+        color: var(--gp-danger) !important;
         width: 12px !important;
         height: 12px !important;
         border-radius: 50% !important;
@@ -155,8 +155,8 @@
 
     /* Deliverables: diamonds, filled when we are leading them. */
     .vis-item.deliverable-point {
-        background-color: #ffffff !important;
-        border: 2px solid #b58105 !important;
+        background-color: var(--gp-background) !important;
+        border: 2px solid var(--gp-warning) !important;
         width: 11px !important;
         height: 11px !important;
         transform: rotate(45deg);
@@ -165,7 +165,7 @@
     }
 
     .vis-item.deliverable-point.deliverable-lead {
-        background-color: #b58105 !important;
+        background-color: var(--gp-warning) !important;
     }
 
     .vis-item.deliverable-point .vis-item-content {
@@ -211,17 +211,6 @@
             end = new Date(max);
         }
         return { start: start, end: end, min: min, max: max };
-    }
-
-    function gpPercentageColor(percentage) {
-        var p = Math.max(0, Math.min(100, Number(percentage) || 0));
-        var t = p / 100;
-        var start = { r: 176, g: 220, b: 255 };
-        var end = { r: 0, g: 73, b: 144 };
-        var r = Math.round(start.r + (end.r - start.r) * t);
-        var g = Math.round(start.g + (end.g - start.g) * t);
-        var b = Math.round(start.b + (end.b - start.b) * t);
-        return 'rgb(' + r + ', ' + g + ', ' + b + ')';
     }
 
     function gpEnsureFloatingTooltip() {
@@ -302,7 +291,7 @@
             title: '<strong>{{ project.acronym|escapejs }}</strong><br>Reguläre Laufzeit: {{ project.start_date }} - {{ project.end_date }}',
             start: regularStart,
             end: regularEnd,
-            style: 'background-color: #004990; border-color: #003a73; color: #ffffff;'
+            style: 'background-color: var(--gp-primary); border-color: var(--gp-primary-hover); color: var(--gp-on-primary);'
         });
 
 {% if project.extension_planning_date and project.extension_planning_date > project.end_date %}
@@ -315,7 +304,7 @@
                 title: '<strong>{{ project.acronym|escapejs }}</strong><br>Kostenneutrale Verlängerung: {{ project.end_date }} - {{ project.extension_planning_date }}',
                 start: regularEnd,
                 end: extensionEnd,
-                style: 'background-color: ' + gpPercentageColor(50) + '; border-color: #4e78b4; color: #ffffff;'
+                style: gpTheme.percentageStyle(50)
             });
         }
 {% endif %}
@@ -450,7 +439,7 @@
             className: 'status-{{ row.status }}',
             start: startDate,
             end: endDate,
-            style: 'background-color: ' + gpPercentageColor(percentage) + '; border-color: #4e78b4; color: #ffffff;'
+            style: gpTheme.percentageStyle(percentage)
         });
 {% endfor %}
 
@@ -571,7 +560,7 @@
             className: 'status-{{ row.status }}',
             start: startDate,
             end: endDate,
-            style: 'background-color: ' + gpPercentageColor(percentage) + '; border-color: #4e78b4; color: #ffffff;'
+            style: gpTheme.percentageStyle(percentage)
         });
 {% endfor %}
 

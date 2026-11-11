@@ -210,9 +210,9 @@
 
 <style>
     .timeline-scroll {
-        border: 1px solid #d6d6d6;
+        border: 1px solid var(--gp-secondary);
         border-radius: 8px;
-        background: #fff;
+        background: var(--gp-background);
         overflow-x: hidden;
         overflow-y: visible;
         box-sizing: border-box;
@@ -232,9 +232,9 @@
     }
 
     .timeline-shell .vis-item {
-        background-color: #004990;
-        border-color: #003a73;
-        color: #ffffff;
+        background-color: var(--gp-primary);
+        border-color: var(--gp-primary-hover);
+        color: var(--gp-on-primary);
     }
 
     .vis-item {
@@ -243,13 +243,13 @@
     }
 
     .vis-item.vis-background.reporting-period {
-        background-color: rgba(111, 66, 193, 0.08);
-        border-left: 1px dashed rgba(111, 66, 193, 0.5);
-        border-right: 1px dashed rgba(111, 66, 193, 0.5);
+        background-color: rgba(var(--gp-warning-rgb), 0.08);
+        border-left: 1px dashed rgba(var(--gp-warning-rgb), 0.5);
+        border-right: 1px dashed rgba(var(--gp-warning-rgb), 0.5);
     }
 
     .vis-item.vis-background.reporting-period .vis-item-content {
-        color: #6f42c1 !important;
+        color: var(--gp-warning) !important;
         font-size: 0.75rem;
     }
 
@@ -267,7 +267,7 @@
     }
 
     .vis-item .vis-item-content {
-        color: #ffffff !important;
+        color: var(--gp-on-primary) !important;
     }
 
     .vis-time-axis .vis-text {

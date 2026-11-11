@@ -347,6 +347,48 @@ For Docker, mount the directory at `/app/branding` as shown in the Compose
 example above. The container collects the asset during startup. Set
 `BRAND_LOGO=` to hide the navbar logo entirely.
 
+### Theme colours
+
+The navigation, links, buttons, budget progress bars, alerts, timelines and
+statistics charts share a semantic palette. The administration uses the same
+branding while retaining Django's light/dark mode. Colours are independent of
+the SAP adapter, so every deployment can configure its own branding.
+
+Create a local configuration using the tracked example:
+
+```shell
+cp branding/theme.example.json branding/theme.json
+```
+
+```json
+{
+  "primary": "#02246C",
+  "secondary": "#D2D4D5",
+  "success": "#016E3A",
+  "danger": "#EB6C5F",
+  "warning": "#EF861F",
+  "note": "#FEEFD6",
+  "background": "#FFFFFF",
+  "foreground": "#000000"
+}
+```
+
+These are also the defaults when no configuration exists. Only override the
+roles you need; values use six-digit hex notation. Hover colours, lighter
+surfaces and contrasting button text are derived automatically. In statistics,
+funds use `primary`, planned expenses a lighter primary tone, overhead `warning`
+and SAP actuals `success`. Timeline status patterns remain visible alongside
+colours.
+
+`branding/theme.json` is Git-ignored and can be copied to colleagues as-is.
+Alternatively set `BRAND_THEME_FILE=/path/to/theme.json`. Invalid configurations
+fall back to the defaults and log an explanation. Edits take effect on the next
+page load; no database migration is needed.
+
+For Docker, the existing `./branding:/app/branding:ro` mount also supplies the
+theme file. Keep that local file on the server across container updates. New
+application CSS/JavaScript is collected at container startup as usual.
+
 ## Staffing and Validation Workflows
 
 The main dashboard displays current staff only; people whose status is

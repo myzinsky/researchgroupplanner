@@ -1,0 +1,41 @@
+/* Keep Django's native light/dark surfaces while sharing semantic branding. */
+:root {
+    --primary: var(--gp-primary);
+    --secondary: var(--gp-primary);
+    --primary-fg: var(--gp-on-primary);
+    --header-bg: var(--gp-primary);
+    --header-color: var(--gp-on-primary);
+    --header-link-color: var(--gp-on-primary);
+    --accent: var(--gp-on-primary);
+    --button-bg: var(--gp-primary);
+    --button-fg: var(--gp-on-primary);
+    --button-hover-bg: var(--gp-primary-hover);
+    --default-button-bg: var(--gp-success);
+    --default-button-hover-bg: var(--gp-success-hover);
+    --delete-button-bg: var(--gp-danger);
+    --delete-button-hover-bg: var(--gp-danger-hover);
+}
+html[data-theme="light"] {
+    --link-fg: var(--gp-primary);
+    --link-hover-color: var(--gp-primary-hover);
+    --selected-row: var(--gp-note);
+}
+html[data-theme="dark"] {
+    --link-fg: var(--gp-primary-soft);
+    --link-hover-color: var(--gp-background);
+}
+@media (prefers-color-scheme: light) {
+    html[data-theme="auto"] {
+        --link-fg: var(--gp-primary);
+        --link-hover-color: var(--gp-primary-hover);
+        --selected-row: var(--gp-note);
+    }
+}
+@media (prefers-color-scheme: dark) {
+    html[data-theme="auto"] {
+        --link-fg: var(--gp-primary-soft);
+        --link-hover-color: var(--gp-background);
+    }
+}
+.submit-row input.default { color: var(--gp-on-success); }
+.submit-row a.deletelink, a.deletelink:visited { color: var(--gp-on-danger); }

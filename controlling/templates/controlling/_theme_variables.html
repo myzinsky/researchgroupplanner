@@ -1,0 +1,6 @@
+<style id="brand-theme-variables">
+    :root {
+        {% for name, value in brand_theme_variables.items %}{{ name }}: {{ value }};
+        {% endfor %}
+    }
+</style>

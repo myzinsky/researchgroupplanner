@@ -13,9 +13,9 @@
   <script src="{% static 'vendor/vis-timeline/vis-timeline-graph2d.min.js' %}"></script>
   <style>
       .timeline-scroll {
-          border: 1px solid #d6d6d6;
+          border: 1px solid var(--gp-secondary);
           border-radius: 8px;
-          background: #fff;
+          background: var(--gp-background);
           margin-bottom: 1.5rem;
       }
 
@@ -24,8 +24,8 @@
       }
 
       #allocation_timeline .vis-item {
-          background-color: #004990;
-          border-color: #003a73;
+          background-color: var(--gp-primary);
+          border-color: var(--gp-primary-hover);
           border-radius: 5px;
           font-size: 0.85rem;
       }
@@ -35,7 +35,7 @@
       }
 
       #allocation_timeline .vis-item .vis-item-content {
-          color: #ffffff;
+          color: var(--gp-on-primary);
       }
 
       #allocation_timeline .vis-label {
